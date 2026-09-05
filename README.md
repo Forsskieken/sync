@@ -20,15 +20,47 @@ FastAPI backend, one HTML page, no database.
 
 ## Install
 
+Runs as an ordinary user, not as root — the service may overwrite subtitle
+files. Needs `ffmpeg` for `ffprobe` and the AAC conversion.
+
+**As root, once:**
+
 ```bash
+apt update && apt install -y git python3-venv ffmpeg
+adduser --uid 1001 --gid 1003 --disabled-password --gecos "" guyf   # skip if the user exists
+loginctl enable-linger guyf     # without this the service stops at logout
+install -d -o guyf -g 1003 /opt/subtitle-sync
+```
+
+**As that user:**
+
+```bash
+su - guyf
+git clone git@github.com:Forsskieken/sync.git /opt/subtitle-sync
+cd /opt/subtitle-sync
+
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp subtitle-sync.env.example subtitle-sync.env && chmod 600 subtitle-sync.env
 $EDITOR subtitle-sync.env          # Jellyfin URL and API key
-cp subtitle-sync.service.example ~/.config/systemd/user/subtitle-sync.service
+
+mkdir -p ~/.config/systemd/user
+sed 's|%h/subtitle-sync|/opt/subtitle-sync|g' subtitle-sync.service.example \
+    > ~/.config/systemd/user/subtitle-sync.service
 systemctl --user daemon-reload && systemctl --user enable --now subtitle-sync
+systemctl --user status subtitle-sync --no-pager
 ```
 
-Then open `http://127.0.0.1:8099/`.
+No SSH key on that machine? Copy the files across instead of cloning, from a
+machine that has the repo:
+
+```bash
+rsync -a --exclude .venv ~/projecten/thuis/sync/ guyf@<host>:/opt/subtitle-sync/
+```
+
+Then open `http://127.0.0.1:8099/`. It listens on the loopback only, so reach it
+over an SSH tunnel: `ssh -L 8099:127.0.0.1:8099 guyf@<host>`.
+
+The user needs read and write access to everything under `ALLOWED_ROOTS`.
 
 ## Configuration
 
@@ -47,6 +79,8 @@ All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
 - **No login.** The unit binds to `127.0.0.1` for that reason — the service may
   overwrite subtitle files anywhere under `ALLOWED_ROOTS`. Reach it over an SSH
   tunnel, or put a proxy with a password in front. Do not bind it to `0.0.0.0`.
+- **Not as root.** It runs as an ordinary user who has access to `ALLOWED_ROOTS`
+  and nothing more.
 - Every path is resolved before use and must sit inside `ALLOWED_ROOTS`, so
   `..` and symlinks cannot walk out (`safe_path` in `app.py`).
 - Saving writes a backup first and reports its name.
