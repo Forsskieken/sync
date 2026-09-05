@@ -57,6 +57,10 @@ than letting the system choose one.
 
 Two ways. The directory must be empty either way.
 
+Do this as the service account, not as root — files cloned by root are owned by
+root and the service cannot build its virtualenv. Cloned as root anyway?
+`chown -R jan:family /opt/subtitle-sync` puts it right.
+
 **A — clone, if the machine has a key GitHub knows.** Check with
 `ssh -T git@github.com`; it should answer with the repository name. It has none?
 Make one and register it as a **read-only deploy key** on this repository
@@ -84,6 +88,8 @@ Build it on the target instead, as the next step does.
 ```bash
 su - jan
 cd /opt/subtitle-sync
+# Mind the trailing dot: without it git makes a sync/ subdirectory and every
+# step below then fails on a file that is one level down.
 git clone git@github.com:Forsskieken/sync.git .    # route A only
 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
