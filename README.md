@@ -35,8 +35,21 @@ nobody and saving fails. That makes the account uid 1001, gid 1005.
 
 ```bash
 apt update && apt install -y git python3-venv ffmpeg
+
+# The group first, with the gid the share already uses.
+getent group family || groupadd -g 1005 family
+
+# Then the account. Second line instead of the first if it already exists.
+id jan || useradd -u 1001 -g family -m -s /bin/bash jan
+usermod -aG family jan
+
+id jan                       # check: uid=1001 gid=1005(family)
 install -d -o jan -g family /opt/subtitle-sync
 ```
+
+`groupadd -g` and `useradd -u` are where the numbers come from. Pick the gid
+that the media share already uses — `ls -n` on it shows the number — rather
+than letting the system choose one.
 
 **As that user:**
 
