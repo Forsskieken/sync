@@ -53,6 +53,10 @@ than letting the system choose one.
 
 **As that user:**
 
+The directory has to be empty for `git clone`, and the machine needs an SSH key
+GitHub knows — check with `ssh -T git@github.com` first. No key? Skip the clone
+and copy the files across instead, see below.
+
 ```bash
 su - jan
 git clone git@github.com:Forsskieken/sync.git /opt/subtitle-sync
@@ -60,7 +64,7 @@ cd /opt/subtitle-sync
 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp subtitle-sync.env.example subtitle-sync.env && chmod 600 subtitle-sync.env
-$EDITOR subtitle-sync.env          # Jellyfin URL and API key
+nano subtitle-sync.env             # Jellyfin URL and API key
 exit
 ```
 
@@ -68,7 +72,7 @@ exit
 
 ```bash
 cp /opt/subtitle-sync/subtitle-sync.service.example /etc/systemd/system/subtitle-sync.service
-$EDITOR /etc/systemd/system/subtitle-sync.service   # User, Group, ReadWritePaths
+nano /etc/systemd/system/subtitle-sync.service    # User, Group, ReadWritePaths
 systemctl daemon-reload && systemctl enable --now subtitle-sync
 systemctl status subtitle-sync --no-pager
 journalctl -u subtitle-sync -f
