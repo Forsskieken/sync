@@ -143,7 +143,11 @@ All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
 
 - **No login.** The unit binds to `127.0.0.1` for that reason — the service may
   overwrite subtitle files anywhere under `ALLOWED_ROOTS`. Reach it over an SSH
-  tunnel, or put a proxy with a password in front. Do not bind it to `0.0.0.0`.
+  tunnel, or put a proxy with a password in front.
+- **Opening it to the network** is a second `ExecStart` line in the unit, ready
+  to swap in. On a home network among people you trust that is a fair trade; on
+  anything else it means everyone who can reach the port can rewrite your
+  subtitle files.
 - **Not as root.** It runs as an ordinary user who has access to `ALLOWED_ROOTS`
   and nothing more.
 - Every path is resolved before use and must sit inside `ALLOWED_ROOTS`, so

@@ -15,9 +15,13 @@ User=jan
 Group=family
 WorkingDirectory=/opt/subtitle-sync
 EnvironmentFile=/opt/subtitle-sync/subtitle-sync.env
-# Loopback only: there is no login on this service. Reach it through an SSH
-# tunnel, or put a proxy with a password in front.
+# There is no login on this service, so it stays on the loopback by default.
+# Reach it through an SSH tunnel, or put a proxy with a password in front.
 ExecStart=/opt/subtitle-sync/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8099
+# On a home network where everyone is trusted, swap the two lines above and
+# below to reach it from a phone. Anyone on the network can then rewrite
+# subtitles under ALLOWED_ROOTS without a password.
+#ExecStart=/opt/subtitle-sync/.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8099
 Restart=on-failure
 RestartSec=5
 
