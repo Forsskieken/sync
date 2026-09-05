@@ -1,0 +1,8 @@
+# Copy to /etc/systemd/system/ together with the timer. Empties the converted
+# audio; the service rebuilds whatever it needs again.
+[Unit]
+Description=subtitle-sync - empty the audio cache
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/bin/find /var/cache/subtitle-sync -mindepth 1 -delete

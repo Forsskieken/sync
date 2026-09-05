@@ -101,12 +101,22 @@ exit
 **As root again, to start it:**
 
 ```bash
-cp /opt/subtitle-sync/subtitle-sync.service.example /etc/systemd/system/subtitle-sync.service
+cd /opt/subtitle-sync
+cp subtitle-sync.service.example       /etc/systemd/system/subtitle-sync.service
+cp subtitle-sync-clean.service.example /etc/systemd/system/subtitle-sync-clean.service
+cp subtitle-sync-clean.timer.example   /etc/systemd/system/subtitle-sync-clean.timer
 nano /etc/systemd/system/subtitle-sync.service    # User, Group, ReadWritePaths
-systemctl daemon-reload && systemctl enable --now subtitle-sync
+systemctl daemon-reload
+systemctl enable --now subtitle-sync subtitle-sync-clean.timer
 systemctl status subtitle-sync --no-pager
 journalctl -u subtitle-sync -f
 ```
+
+The timer empties the audio cache nightly; the service rebuilds what it needs.
+Keep `CACHE_DIR` out of `/tmp`: `PrivateTmp=yes` gives the service a `/tmp` of
+its own, so a cleaner running outside it would empty the wrong directory and the
+real cache would grow unseen. `CacheDirectory=subtitle-sync` puts it in
+`/var/cache/subtitle-sync` instead, owned by the service account.
 
 `ReadWritePaths=` in the unit must list the same directories as `ALLOWED_ROOTS`
 in the env file. Everything else is read-only, so a mismatch shows up as
@@ -127,7 +137,7 @@ All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
 | `JELLYFIN_API_KEY` | Jellyfin API key. The only secret |
 | `PATH_MAP` | JSON: how Jellyfin's paths map onto this machine's |
 | `ALLOWED_ROOTS` | JSON list. Browsing and saving happen only inside these |
-| `CACHE_DIR` | Where converted audio is kept |
+| `CACHE_DIR` | Where converted audio is kept. `CacheDirectory=` in the unit creates it |
 
 ## Security
 

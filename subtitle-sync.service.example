@@ -25,7 +25,13 @@ RestartSec=5
 # path that escapes ALLOWED_ROOTS still cannot write anything.
 ProtectSystem=strict
 ProtectHome=yes
+# Own /tmp, so the converted audio cannot go to the host's. That is also why
+# CACHE_DIR must not be under /tmp: systemd wipes a private one per start, and
+# a cleanup timer outside the service would clean the wrong directory.
 PrivateTmp=yes
+# Creates /var/cache/subtitle-sync, owned by User=, writable without being
+# listed in ReadWritePaths. Point CACHE_DIR at it.
+CacheDirectory=subtitle-sync
 NoNewPrivileges=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
