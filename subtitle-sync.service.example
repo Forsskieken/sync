@@ -7,10 +7,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Not root: this service overwrites subtitle files. `jan` and `media` are an
+# Not root: this service overwrites subtitle files. `jan` and `family` are an
 # example -- use the account you have and the group that owns the media share.
+# The group is what grants write access to ALLOWED_ROOTS; inside a container
+# its gid must be the same number there as on the host.
 User=jan
-Group=media
+Group=family
 WorkingDirectory=/opt/subtitle-sync
 EnvironmentFile=/opt/subtitle-sync/subtitle-sync.env
 # Loopback only: there is no login on this service. Reach it through an SSH

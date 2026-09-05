@@ -21,15 +21,21 @@ FastAPI backend, one HTML page, no database.
 ## Install
 
 Runs as an ordinary user, not as root — the service may overwrite subtitle
-files. **`jan` and `media` below are an example**: use whatever account you
+files. **`jan` and `family` below are an example**: use whatever account you
 have and whatever group owns the media share. Needs `ffmpeg` for `ffprobe` and
 the AAC conversion.
+
+**Why a group.** The films and subtitles all belong to one group — `family`,
+gid 1005 say — and only its members may write there. So the account does not
+own the files; it joins that group. Inside a container the *number* is what
+counts: gid 1005 there must be gid 1005 on the host, or the share reads as
+nobody and saving fails. That makes the account uid 1001, gid 1005.
 
 **As root, once:**
 
 ```bash
 apt update && apt install -y git python3-venv ffmpeg
-install -d -o jan -g media /opt/subtitle-sync
+install -d -o jan -g family /opt/subtitle-sync
 ```
 
 **As that user:**
