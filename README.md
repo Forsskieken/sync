@@ -53,14 +53,38 @@ than letting the system choose one.
 
 **As that user:**
 
-The directory has to be empty for `git clone`, and the machine needs an SSH key
-GitHub knows — check with `ssh -T git@github.com` first. No key? Skip the clone
-and copy the files across instead, see below.
+### Getting the files there
+
+Two ways. The directory must be empty either way.
+
+**A — clone, if the machine has a key GitHub knows.** Check with
+`ssh -T git@github.com`; it should answer with the repository name. It has none?
+Make one and register it as a **read-only deploy key** on this repository
+(Settings → Deploy keys), which is scoped to this repo alone:
+
+```bash
+ssh-keygen -t ed25519 -C "$(hostname) subtitle-sync" -f ~/.ssh/id_ed25519 -N ""
+cat ~/.ssh/id_ed25519.pub        # paste this into the deploy key
+```
+
+**B — copy from a machine that already has the files.** No key needed on the
+target. Run this on the machine that has the checkout:
+
+```bash
+rsync -a --exclude .venv --exclude .git \
+      /path/to/subtitle-sync/ jan@<host>:/opt/subtitle-sync/
+```
+
+`--exclude .venv` matters: a virtualenv carries absolute paths in
+`pyvenv.cfg` and in every shebang under `bin/`, so a copied one does not run.
+Build it on the target instead, as the next step does.
+
+**As that user:**
 
 ```bash
 su - jan
-git clone git@github.com:Forsskieken/sync.git /opt/subtitle-sync
 cd /opt/subtitle-sync
+git clone git@github.com:Forsskieken/sync.git .    # route A only
 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp subtitle-sync.env.example subtitle-sync.env && chmod 600 subtitle-sync.env
@@ -81,13 +105,6 @@ journalctl -u subtitle-sync -f
 `ReadWritePaths=` in the unit must list the same directories as `ALLOWED_ROOTS`
 in the env file. Everything else is read-only, so a mismatch shows up as
 "Read-only file system" when saving.
-
-No SSH key on that machine? Copy the files across instead of cloning, from a
-machine that has the repo:
-
-```bash
-rsync -a --exclude .venv /path/to/subtitle-sync/ jan@<host>:/opt/subtitle-sync/
-```
 
 Then open `http://127.0.0.1:8099/`. It listens on the loopback only, so reach it
 over an SSH tunnel: `ssh -L 8099:127.0.0.1:8099 jan@<host>`.
