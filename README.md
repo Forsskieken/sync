@@ -1,10 +1,16 @@
-# subtitle-sync
+# Live subtitlesync
 
-Nudge subtitle timings while the film plays — following a Jellyfin session on
-the TV, or scrubbing the audio track in the browser — and write the corrected
-file back with a backup.
+Subtitles that run ahead or behind, fixed while the film is playing. You watch,
+you hear the line, you nudge — and the page writes the corrected file back.
 
-FastAPI backend, one HTML page, no database.
+![Following an episode on the TV, one second early and being pulled back](docs/screenshot.png)
+
+**It works next to a player, not instead of one.** The film runs on the TV
+through Jellyfin, or you open the audio track in the browser. This page follows
+along, shows the subtitle line that belongs to the moment you are hearing, and
+lets you shift it until word and sound meet. There is no automatic detection:
+**you tune by ear**, which is why the current line is shown large and why the
+buttons go down to a tenth of a second.
 
 ## What it does
 
@@ -15,6 +21,8 @@ FastAPI backend, one HTML page, no database.
 - **Undo**, then **Save** — the old file is kept as a backup first.
 - **Reload on TV** after saving, so the player picks up the new file at the same
   position.
+- **Framerate conversion.** A 25 fps subtitle against a 23.976 fps film drifts
+  further apart the longer it runs; converting rescales the whole file at once.
 - Audio that Chrome cannot play is re-encoded to AAC in the background, with a
   progress bar; anything already playable is copied straight through.
 
