@@ -75,12 +75,21 @@ header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .grid.six{grid-template-columns:repeat(6,1fr)}
 button.nudge{
   background:var(--raised);border:1px solid var(--line);border-radius:8px;
-  color:var(--text);font:600 14px/1 var(--mono);
-  min-height:56px;cursor:pointer;
+  color:var(--text);font:600 15px/1 var(--mono);
+  min-height:56px;cursor:pointer;padding:0 2px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+  font-variant-numeric:tabular-nums;
+}
+button.nudge i{font:400 9px/1 var(--mono);font-style:normal;
+  letter-spacing:.06em;opacity:.55}
+@media (max-width:400px){
+  button.nudge{font-size:13px}
+  button.nudge i{font-size:8px}
 }
 button.nudge:active{background:#2A2A3C;border-color:var(--cyan)}
 button.nudge.minus{color:var(--cyan)}
 button.nudge.plus{color:var(--yellow)}
+.grid.four{grid-template-columns:repeat(4,1fr)}
 button.act{
   background:var(--raised);border:1px solid var(--line);border-radius:8px;
   color:var(--text);font:600 13px/1 var(--sans);min-height:48px;cursor:pointer;
@@ -98,6 +107,23 @@ button.act:active:not(:disabled){filter:brightness(1.15)}
 }
 .scope button[aria-pressed="true"]{border-color:var(--cyan);color:var(--cyan);background:#101824}
 .scope small{display:block;font-weight:400;font-size:10px;opacity:.7;margin-top:2px}
+
+/* ---- framerate ---- */
+details.fps{padding:0}
+details.fps summary{padding:14px}
+details.fps[open] summary{border-bottom:1px solid var(--line)}
+#fpsHint{font:400 10px/1 var(--mono);color:var(--cyan);letter-spacing:0;
+  text-transform:none;margin-left:6px}
+.fpsGrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:14px 14px 0}
+.fpsGrid label{font:600 10px/1 var(--sans);letter-spacing:.14em;
+  text-transform:uppercase;color:var(--dim);display:block}
+.fpsGrid select{width:100%;margin-top:6px}
+.fpsFoot{display:flex;align-items:center;gap:10px;padding:12px 14px}
+.fpsFoot .act{flex:none;padding:0 18px}
+.factor{flex:1;font:700 20px/1 var(--mono);font-variant-numeric:tabular-nums;
+  color:var(--dim)}
+.factor.on{color:var(--cyan)}
+.fpsNote{font:400 11px/1.4 var(--sans);color:var(--dim);padding:0 14px 14px}
 
 /* ---- cue list ---- */
 details summary{
@@ -224,17 +250,31 @@ audio{width:100%;margin-top:8px}
 </div>
 
 <div class="grid six" style="margin-bottom:10px">
-  <button class="nudge minus" data-d="-1000">&minus;1s</button>
-  <button class="nudge minus" data-d="-500">&minus;&frac12;</button>
-  <button class="nudge minus" data-d="-100">&minus;.1</button>
-  <button class="nudge plus" data-d="100">+.1</button>
-  <button class="nudge plus" data-d="500">+&frac12;</button>
-  <button class="nudge plus" data-d="1000">+1s</button>
+  <button class="nudge minus" data-d="-1000">&minus;1<i>s</i></button>
+  <button class="nudge minus" data-d="-500">&minus;500<i>ms</i></button>
+  <button class="nudge minus" data-d="-100">&minus;100<i>ms</i></button>
+  <button class="nudge plus" data-d="100">+100<i>ms</i></button>
+  <button class="nudge plus" data-d="500">+500<i>ms</i></button>
+  <button class="nudge plus" data-d="1000">+1<i>s</i></button>
 </div>
 
-<div class="grid" style="margin-bottom:10px">
+<details class="panel fps" id="fpsBox">
+  <summary>Framerate omzetten <span id="fpsHint"></span></summary>
+  <div class="fpsGrid">
+    <label>Van<select id="fpsFrom"></select></label>
+    <label>Naar<select id="fpsTo"></select></label>
+  </div>
+  <div class="fpsFoot">
+    <span class="factor" id="fpsFactor">&times;1,0000</span>
+    <button class="act" id="bFps">Omzetten</button>
+  </div>
+  <div class="fpsNote">Werkt altijd op het hele bestand, verankerd op 00:00:00.</div>
+</details>
+
+<div class="grid four" style="margin-bottom:10px">
   <button class="act" id="bUndo" disabled>Ongedaan</button>
-  <button class="act" id="bReload">Herladen op TV</button>
+  <button class="act" id="bReset" disabled>Herstel</button>
+  <button class="act" id="bReload">Herladen</button>
   <button class="act primary" id="bSave" disabled>Opslaan</button>
 </div>
 
@@ -250,11 +290,12 @@ const $ = s => document.querySelector(s);
 const S = {
   mode:'tv', scope:'here',
   session:null, subPath:null,
-  cues:[], undo:[], dirty:false,
+  base:[], cues:[], ops:[], dirty:false,
   pos:0, posAt:0, paused:true,
   selected:null,      // pad dat aangetikt is
   opened:null,        // pad dat geladen is
   jobKey:null, jobTimer:null,
+  videoFps:null,
 };
 
 // ---------------------------------------------------------------- util
@@ -284,6 +325,25 @@ async function api(path, opts){
 }
 
 // ---------------------------------------------------------------- cues
+// S.base = zoals van schijf geladen. S.ops = de bewerkingen die je deed.
+// S.cues wordt telkens opnieuw uit base + ops berekend. Zo kunnen verschuiven
+// (optellen) en framerate omzetten (vermenigvuldigen) door elkaar staan.
+function applyOps(){
+  S.cues = S.base.map(c => ({...c}));
+  for(const op of S.ops){
+    if(op.type === 'shift'){
+      for(let i=op.from;i<S.cues.length;i++){
+        S.cues[i].start += op.delta; S.cues[i].end += op.delta;
+      }
+    } else if(op.type === 'scale'){
+      for(let i=0;i<S.cues.length;i++){
+        S.cues[i].start *= op.factor; S.cues[i].end *= op.factor;
+      }
+    }
+  }
+  S.dirty = S.ops.length > 0;
+  listSig = '';
+}
 function anchorIndex(pos){
   for(let i=0;i<S.cues.length;i++) if(S.cues[i].end >= pos) return i;
   return -1;
@@ -299,19 +359,81 @@ function shift(delta){
   if(!S.cues.length){ toast('Laad eerst een ondertitel','err'); return; }
   const from = S.scope==='all' ? 0 : anchorIndex(livePos());
   if(from < 0){ toast('Geen cue vanaf deze positie','err'); return; }
-  for(let i=from;i<S.cues.length;i++){ S.cues[i].start+=delta; S.cues[i].end+=delta; }
-  S.undo.push({from, delta});
-  S.dirty = true;
-  render();
+  S.ops.push({type:'shift', from, delta});
+  applyOps(); render();
+}
+function scale(factor){
+  if(!S.cues.length){ toast('Laad eerst een ondertitel','err'); return; }
+  if(!(factor > 0) || factor === 1){ toast('Van en naar zijn gelijk','err'); return; }
+  S.ops.push({type:'scale', factor});
+  applyOps(); render();
 }
 function undo(){
-  const u = S.undo.pop();
-  if(!u) return;
-  for(let i=u.from;i<S.cues.length;i++){ S.cues[i].start-=u.delta; S.cues[i].end-=u.delta; }
-  S.dirty = S.undo.length > 0;
-  render();
+  if(!S.ops.pop()) return;
+  applyOps(); render();
 }
-const totalOffsetAt = i => S.undo.reduce((a,u)=> a + (i >= u.from ? u.delta : 0), 0);
+// Alles terug naar zoals van schijf geladen. Framerates raad je nu eenmaal,
+// dus je wil er een paar kunnen proberen zonder stap voor stap terug te tikken.
+function reset(){
+  if(!S.ops.length) return;
+  S.ops = [];
+  applyOps(); render();
+  toast('Terug naar het geladen bestand','ok');
+}
+// Verschil tussen nu en zoals-geladen. Werkt voor verschuiven en schalen.
+const totalOffsetAt = i =>
+  (S.base[i] ? S.cues[i].start - S.base[i].start : 0);
+
+// ---------------------------------------------------------------- framerate
+// Een cue hoort bij een frame, en frame N valt op N/fps. Getimed op `van` fps
+// maar afgespeeld op `naar` fps betekent dus: nieuw = oud * (van / naar).
+const FPS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60];
+const fmtFps = v => String(v).replace('.', ',');
+
+function fillFps(){
+  ['#fpsFrom','#fpsTo'].forEach(id=>{
+    const s = $(id);
+    s.innerHTML = '';
+    FPS.forEach(v=>{
+      const o = document.createElement('option');
+      o.value = v; o.textContent = fmtFps(v);
+      s.appendChild(o);
+    });
+  });
+  $('#fpsFrom').value = 25;
+  $('#fpsTo').value = 23.976;
+  fpsFactor();
+}
+
+function fpsFactor(){
+  const from = parseFloat($('#fpsFrom').value);
+  const to = parseFloat($('#fpsTo').value);
+  const f = from / to;
+  const el = $('#fpsFactor');
+  el.textContent = '\u00d7' + f.toFixed(4).replace('.', ',');
+  el.className = 'factor' + (Math.abs(f - 1) > 1e-9 ? ' on' : '');
+  return f;
+}
+
+// Zet de doel-framerate op wat de video echt is.
+async function loadFps(path){
+  S.videoFps = null;
+  $('#fpsHint').textContent = '';
+  try{
+    const d = await api('/api/video/info?path=' + encodeURIComponent(path));
+    if(!d.fps) return;
+    S.videoFps = d.fps;
+    // Rond naar de dichtstbijzijnde bekende waarde, anders past de select niet.
+    const near = FPS.reduce((a,b)=> Math.abs(b-d.fps) < Math.abs(a-d.fps) ? b : a);
+    if(Math.abs(near - d.fps) < 0.05){
+      $('#fpsTo').value = near;
+      $('#fpsHint').textContent = 'video: ' + fmtFps(near);
+    } else {
+      $('#fpsHint').textContent = 'video: ' + fmtFps(d.fps) + ' (ongewoon)';
+    }
+    fpsFactor();
+  }catch(e){ /* framerate is een luxe, geen blokkade */ }
+}
 
 // ---------------------------------------------------------------- positie
 function livePos(){
@@ -342,7 +464,8 @@ function render(){
   ov.textContent = off ? signed(off) : '0';
   ov.className = 'val' + (off ? ' on' : '');
 
-  $('#bUndo').disabled = !S.undo.length;
+  $('#bUndo').disabled = !S.ops.length;
+  $('#bReset').disabled = !S.ops.length;
   $('#bSave').disabled = !S.dirty;
   $('#cueCount').textContent = S.cues.length ? `\u00b7 ${S.cues.length}` : '';
   renderList(ci);
@@ -350,7 +473,7 @@ function render(){
 
 let listSig = '';
 function renderList(ci){
-  const sig = S.cues.length + ':' + S.undo.length + ':' + ci;
+  const sig = S.cues.length + ':' + S.ops.length + ':' + ci;
   if(sig === listSig) return;
   listSig = sig;
   const box = $('#cueList');
@@ -384,11 +507,12 @@ async function seekTo(ms){
 
 // ---------------------------------------------------------------- ondertitels
 async function loadSub(path){
-  if(!path){ S.cues=[]; S.undo=[]; S.dirty=false; S.subPath=null; listSig=''; render(); return; }
+  if(!path){ S.base=[]; S.cues=[]; S.ops=[]; S.dirty=false; S.subPath=null;
+             listSig=''; render(); return; }
   try{
     const d = await api('/api/subtitle?path=' + encodeURIComponent(path));
-    S.subPath = d.path; S.cues = d.cues; S.undo = []; S.dirty = false; listSig='';
-    render();
+    S.subPath = d.path; S.base = d.cues; S.ops = [];
+    applyOps(); render();
     toast(`${d.cues.length} cues geladen`,'ok');
   }catch(e){ toast(e.message,'err'); }
 }
@@ -423,8 +547,9 @@ async function poll(){
     if(d.item_id !== lastItem){
       lastItem = d.item_id;
       if(S.dirty) toast('Andere aflevering \u2014 niet-opgeslagen wijzigingen','err');
-      else { S.cues=[]; S.undo=[]; listSig=''; }
+      else { S.base=[]; S.cues=[]; S.ops=[]; listSig=''; }
       fillSubs(d.subtitles);
+      if(d.video_path) loadFps(d.video_path);
     }
   }catch(e){
     $('#dot').className = 'dot err';
@@ -448,27 +573,33 @@ async function browse(path){
   }catch(e){ toast(e.message,'err'); }
 }
 
+// De lijst wordt enkel bij browse() opnieuw opgebouwd. Selecteren wisselt
+// alleen klassen - anders vervangt een redraw het element tussen de twee
+// klikken van een dubbelklik in, en vuurt dblclick nooit.
 function drawList(){
   const box = $('#browseList');
   box.innerHTML = '';
   entries.forEach(e=>{
     const row = document.createElement('div');
-    row.className = 'item'
-      + (S.selected === e.path ? ' sel' : '')
-      + (S.opened === e.path ? ' open' : '');
+    row.className = 'item';
     row.innerHTML = `<span class="k">${e.kind}</span>`;
     const nm = document.createElement('span');
     nm.className = 'nm'; nm.textContent = e.name;
     row.appendChild(nm);
 
-    row.onclick = ()=>{ S.selected = e.path; drawList(); };
-    row.ondblclick = ()=> open(e);
+    row.onclick = ()=>{ S.selected = e.path; paintList(); };
+    row.ondblclick = ()=> openEntry(e);
     box.appendChild(row);
+    e._row = row;
+  });
+  paintList();
+}
 
-    // voortgangsbalk hangt onder het bestand dat uitgepakt wordt
-    if(e.kind === 'vid' && S.jobKey && S.opened === e.path){
-      box.appendChild(progressRow());
-    }
+function paintList(){
+  entries.forEach(e=>{
+    if(!e._row) return;
+    e._row.classList.toggle('sel', S.selected === e.path);
+    e._row.classList.toggle('open', S.opened === e.path);
   });
 }
 
@@ -480,14 +611,24 @@ function progressRow(){
   return w;
 }
 
-function open(e){
+function showProgressUnder(path){
+  const old = $('#progRow');
+  if(old) old.remove();
+  const e = entries.find(x => x.path === path);
+  if(e && e._row) e._row.after(progressRow());
+}
+
+function openEntry(e){
   if(e.kind === 'dir'){ browse(e.path); return; }
   S.opened = e.path;
+  S.selected = e.path;
+  paintList();
   $('#audio').classList.add('hide');
   $('#audio').removeAttribute('src');
   fillSubs(e.subtitles);
+  showProgressUnder(e.path);
+  loadFps(e.path);
   prepare(e.path);
-  drawList();
 }
 
 // ---------------------------------------------------------------- uitpakken
@@ -497,7 +638,6 @@ async function prepare(path){
     const d = await api('/api/audio/prepare',{method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
     S.jobKey = d.key;
-    drawList();
     if(d.state === 'done'){ playAudio(d.key); setProg(100,'gereed','done'); return; }
     setProg(0, d.copy ? `${d.codec} \u2014 kopiëren` : `${d.codec} \u2192 aac hercoderen`);
     S.jobTimer = setInterval(()=>pollJob(d.key), 700);
@@ -560,10 +700,15 @@ function setScope(s){
   render();
 }
 
+$('#fpsFrom').onchange = fpsFactor;
+$('#fpsTo').onchange = fpsFactor;
+$('#bFps').onclick = ()=> scale(fpsFactor());
+
 document.querySelectorAll('button.nudge').forEach(b=>{
   b.onclick = ()=> shift(parseInt(b.dataset.d,10));
 });
 $('#bUndo').onclick = undo;
+$('#bReset').onclick = reset;
 $('#subSel').onchange = e => loadSub(e.target.value);
 $('#browseGo').onclick = ()=> browse($('#browsePath').value);
 $('#browsePath').onkeydown = e => { if(e.key==='Enter') browse(e.target.value); };
@@ -576,7 +721,9 @@ $('#bSave').onclick = async ()=>{
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({path:S.subPath, cues:S.cues.map(c=>({
         start:Math.round(c.start), end:Math.round(c.end), text:c.text}))})});
-    S.dirty = false; S.undo = []; listSig='';
+    // Wat op schijf staat is nu de nieuwe basis.
+    S.base = S.cues.map(c=>({...c, start:Math.round(c.start), end:Math.round(c.end)}));
+    S.ops = []; applyOps();
     toast(`Opgeslagen \u00b7 backup ${d.backup.split('/').pop()}`,'ok');
     render();
   }catch(e){ toast(e.message,'err'); $('#bSave').disabled = false; }
@@ -604,14 +751,14 @@ document.onkeydown = e => {
     const a = $('#audio'); if(a.src) a.paused ? a.play() : a.pause();
   }
   if(e.key === 'Enter' && S.mode==='local' && S.selected){
-    const e2 = entries.find(x=>x.path===S.selected); if(e2) open(e2);
+    const e2 = entries.find(x=>x.path===S.selected); if(e2) openEntry(e2);
   }
 };
 window.onbeforeunload = e => { if(S.dirty) return e.returnValue = 'Niet-opgeslagen wijzigingen'; };
 
 setInterval(poll, 1000);
 setInterval(render, 120);
-poll(); render();
+fillFps(); poll(); render();
 </script>
 </body>
 </html>

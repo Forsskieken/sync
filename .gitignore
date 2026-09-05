@@ -1,0 +1,7 @@
+# The real environment file holds the Jellyfin key.
+subtitle-sync.env
+*.env
+!*.env.example
+subtitle-sync.service
+.venv/
+__pycache__/

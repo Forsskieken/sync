@@ -1,0 +1,18 @@
+# Copy to ~/.config/systemd/user/subtitle-sync.service and adjust.
+# The secret lives in subtitle-sync.env (mode 600), never in this file.
+[Unit]
+Description=subtitle-sync - nudge subtitle timings
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/subtitle-sync
+EnvironmentFile=%h/subtitle-sync/subtitle-sync.env
+# Bound to the loopback: the service has no login and may rewrite subtitle
+# files. Reach it over an SSH tunnel, or put a proxy with a password in front.
+ExecStart=%h/subtitle-sync/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8099
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

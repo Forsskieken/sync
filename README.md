@@ -1,42 +1,67 @@
-# sync
+# subtitle-sync
 
-Nudge subtitle timings while the film plays, on the TV or in the browser, and
-write the corrected file back. One HTML page.
+Nudge subtitle timings while the film plays — following a Jellyfin session on
+the TV, or scrubbing the audio track in the browser — and write the corrected
+file back with a backup.
 
-> **Half a project.** This repository holds the front-end only. The page calls
-> nine `/api/…` endpoints and no server here answers them. The contract below is
-> what the page expects; the server still has to be written.
+FastAPI backend, one HTML page, no database.
 
-## What the page does
+## What it does
 
-- **Two sources.** Follow a player on the TV, or open the audio track locally in
-  the browser and scrub through it.
-- **Nudge.** ±1s, ±½s, ±0.1s, from the current cue onward or over the whole file.
-- **Undo**, then **Save** — the server keeps a backup and reports its name.
+- **Two sources.** Follow the Jellyfin session on the TV, or open the audio
+  locally and scrub through it.
+- **Nudge.** ±1 s, ±½ s, ±0.1 s, from the current cue onward or over the whole
+  file. Arrow keys work: ←/→ 0.1 s, ↑/↓ 1 s.
+- **Undo**, then **Save** — the old file is kept as a backup first.
 - **Reload on TV** after saving, so the player picks up the new file at the same
   position.
-- Arrow keys work: ←/→ shift 0.1 s, ↑/↓ shift 1 s.
+- Audio that Chrome cannot play is re-encoded to AAC in the background, with a
+  progress bar; anything already playable is copied straight through.
 
-## The API it expects
+## Install
 
-| Endpoint | Method | Sends | Expects back |
-|---|---|---|---|
-| `/api/session` | GET | — | `session_id`, `item_id`, `name`, `device`, `position_ms`, `paused`, `subtitles[]`, `subtitle_index` |
-| `/api/browse?path=` | GET | — | `path`, `parent`, `dirs[]`, `videos[]`, `subtitles[]` |
-| `/api/subtitle?path=` | GET | — | `cues[]` of `{start, end, text}` in ms |
-| `/api/subtitle/save` | POST | `{path, cues[]}` | `{backup}` — path of the backup it wrote |
-| `/api/audio/prepare` | POST | `{path}` | `{key, state, codec, copy}` |
-| `/api/audio/progress?key=` | GET | — | `{state, percent, error}` |
-| `/api/audio?key=` | GET | — | the audio stream |
-| `/api/player/seek` | POST | `{session_id, position_ms}` | — |
-| `/api/player/reload` | POST | `{session_id, subtitle_index, position_ms}` | — |
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp subtitle-sync.env.example subtitle-sync.env && chmod 600 subtitle-sync.env
+$EDITOR subtitle-sync.env          # Jellyfin URL and API key
+cp subtitle-sync.service.example ~/.config/systemd/user/subtitle-sync.service
+systemctl --user daemon-reload && systemctl --user enable --now subtitle-sync
+```
 
-Everything is same-origin and relative, so the server that answers these also
-serves `sync.html`. No host, port or key is hard-coded anywhere in the page.
+Then open `http://127.0.0.1:8099/`.
 
-## Still to decide
+## Configuration
 
-- Which player the TV side drives, and how the server reaches it.
-- Where `browse` is allowed to look, and how it is stopped from walking outside
-  that directory.
-- Whether the audio conversion runs per request or is cached by key.
+All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
+
+| Variable | Meaning |
+|---|---|
+| `JELLYFIN_URL` | Base URL of the Jellyfin server |
+| `JELLYFIN_API_KEY` | Jellyfin API key. The only secret |
+| `PATH_MAP` | JSON: how Jellyfin's paths map onto this machine's |
+| `ALLOWED_ROOTS` | JSON list. Browsing and saving happen only inside these |
+| `CACHE_DIR` | Where converted audio is kept |
+
+## Security
+
+- **No login.** The unit binds to `127.0.0.1` for that reason — the service may
+  overwrite subtitle files anywhere under `ALLOWED_ROOTS`. Reach it over an SSH
+  tunnel, or put a proxy with a password in front. Do not bind it to `0.0.0.0`.
+- Every path is resolved before use and must sit inside `ALLOWED_ROOTS`, so
+  `..` and symlinks cannot walk out (`safe_path` in `app.py`).
+- Saving writes a backup first and reports its name.
+
+## The API
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/session` | GET | Current Jellyfin session: item, device, position, subtitle tracks |
+| `/api/browse?path=` | GET | Directories, videos and subtitles under a path |
+| `/api/video/info` | GET | Audio codec and stream details of a video |
+| `/api/subtitle?path=` | GET | The cues as `{start, end, text}` in ms |
+| `/api/subtitle/save` | POST | Writes the cues back, returns the backup path |
+| `/api/audio/prepare` | POST | Starts the conversion, returns a job key |
+| `/api/audio/progress?key=` | GET | State and percentage of that job |
+| `/api/audio?key=` | GET | The audio stream |
+| `/api/player/seek` | POST | Move the TV player to a position |
+| `/api/player/reload` | POST | Reload the subtitle track on the TV |
