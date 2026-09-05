@@ -7,10 +7,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Not root: this service overwrites subtitle files. 1003 is the group that owns
-# the media share; use whatever gid grants access to ALLOWED_ROOTS.
-User=guyf
-Group=1003
+# Not root: this service overwrites subtitle files. `jan` and `media` are an
+# example -- use the account you have and the group that owns the media share.
+User=jan
+Group=media
 WorkingDirectory=/opt/subtitle-sync
 EnvironmentFile=/opt/subtitle-sync/subtitle-sync.env
 # Loopback only: there is no login on this service. Reach it through an SSH

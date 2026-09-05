@@ -21,19 +21,21 @@ FastAPI backend, one HTML page, no database.
 ## Install
 
 Runs as an ordinary user, not as root — the service may overwrite subtitle
-files. Needs `ffmpeg` for `ffprobe` and the AAC conversion.
+files. **`jan` and `media` below are an example**: use whatever account you
+have and whatever group owns the media share. Needs `ffmpeg` for `ffprobe` and
+the AAC conversion.
 
 **As root, once:**
 
 ```bash
 apt update && apt install -y git python3-venv ffmpeg
-install -d -o guyf -g 1003 /opt/subtitle-sync
+install -d -o jan -g media /opt/subtitle-sync
 ```
 
 **As that user:**
 
 ```bash
-su - guyf
+su - jan
 git clone git@github.com:Forsskieken/sync.git /opt/subtitle-sync
 cd /opt/subtitle-sync
 
@@ -61,11 +63,11 @@ No SSH key on that machine? Copy the files across instead of cloning, from a
 machine that has the repo:
 
 ```bash
-rsync -a --exclude .venv ~/projecten/thuis/sync/ guyf@<host>:/opt/subtitle-sync/
+rsync -a --exclude .venv /path/to/subtitle-sync/ jan@<host>:/opt/subtitle-sync/
 ```
 
 Then open `http://127.0.0.1:8099/`. It listens on the loopback only, so reach it
-over an SSH tunnel: `ssh -L 8099:127.0.0.1:8099 guyf@<host>`.
+over an SSH tunnel: `ssh -L 8099:127.0.0.1:8099 jan@<host>`.
 
 The user needs read and write access to everything under `ALLOWED_ROOTS`.
 
