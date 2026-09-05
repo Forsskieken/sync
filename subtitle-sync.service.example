@@ -1,18 +1,41 @@
-# Copy to ~/.config/systemd/user/subtitle-sync.service and adjust.
-# The secret lives in subtitle-sync.env (mode 600), never in this file.
+# Copy to /etc/systemd/system/subtitle-sync.service and adjust the paths.
+# The Jellyfin key lives in subtitle-sync.env (mode 600), never in this file.
 [Unit]
 Description=subtitle-sync - nudge subtitle timings
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/subtitle-sync
-EnvironmentFile=%h/subtitle-sync/subtitle-sync.env
-# Bound to the loopback: the service has no login and may rewrite subtitle
-# files. Reach it over an SSH tunnel, or put a proxy with a password in front.
-ExecStart=%h/subtitle-sync/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8099
+# Not root: this service overwrites subtitle files. 1003 is the group that owns
+# the media share; use whatever gid grants access to ALLOWED_ROOTS.
+User=guyf
+Group=1003
+WorkingDirectory=/opt/subtitle-sync
+EnvironmentFile=/opt/subtitle-sync/subtitle-sync.env
+# Loopback only: there is no login on this service. Reach it through an SSH
+# tunnel, or put a proxy with a password in front.
+ExecStart=/opt/subtitle-sync/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8099
 Restart=on-failure
 RestartSec=5
 
+# The whole filesystem is read-only except the directories named below, so a
+# path that escapes ALLOWED_ROOTS still cannot write anything.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# Keep this list equal to ALLOWED_ROOTS in subtitle-sync.env, or saving fails
+# with "Read-only file system" instead of a clear error.
+ReadWritePaths=/mnt/Serie /mnt/Film
+
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

@@ -27,8 +27,6 @@ files. Needs `ffmpeg` for `ffprobe` and the AAC conversion.
 
 ```bash
 apt update && apt install -y git python3-venv ffmpeg
-adduser --uid 1001 --gid 1003 --disabled-password --gecos "" guyf   # skip if the user exists
-loginctl enable-linger guyf     # without this the service stops at logout
 install -d -o guyf -g 1003 /opt/subtitle-sync
 ```
 
@@ -42,13 +40,22 @@ cd /opt/subtitle-sync
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp subtitle-sync.env.example subtitle-sync.env && chmod 600 subtitle-sync.env
 $EDITOR subtitle-sync.env          # Jellyfin URL and API key
-
-mkdir -p ~/.config/systemd/user
-sed 's|%h/subtitle-sync|/opt/subtitle-sync|g' subtitle-sync.service.example \
-    > ~/.config/systemd/user/subtitle-sync.service
-systemctl --user daemon-reload && systemctl --user enable --now subtitle-sync
-systemctl --user status subtitle-sync --no-pager
+exit
 ```
+
+**As root again, to start it:**
+
+```bash
+cp /opt/subtitle-sync/subtitle-sync.service.example /etc/systemd/system/subtitle-sync.service
+$EDITOR /etc/systemd/system/subtitle-sync.service   # User, Group, ReadWritePaths
+systemctl daemon-reload && systemctl enable --now subtitle-sync
+systemctl status subtitle-sync --no-pager
+journalctl -u subtitle-sync -f
+```
+
+`ReadWritePaths=` in the unit must list the same directories as `ALLOWED_ROOTS`
+in the env file. Everything else is read-only, so a mismatch shows up as
+"Read-only file system" when saving.
 
 No SSH key on that machine? Copy the files across instead of cloning, from a
 machine that has the repo:
