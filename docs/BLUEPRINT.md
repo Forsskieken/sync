@@ -2,9 +2,20 @@
 
 ## Doel
 
-Jellyfin pikt losse `.srt`-bestanden op een SMB-share niet op, ingebedde ondertitels wel. Deze uitbreiding geeft de synctool daarom twee nieuwe mogelijkheden. Ten eerste: ondertitels die al **in** een MKV zitten opsommen, uithalen, met de bestaande voorkant bijregelen en na het opslaan terugmuxen. Ten tweede: video's met een losse `.srt` ernaast omzetten naar één MKV met de ondertitel erin, zonder te hercoderen, zodat de collectie één vorm krijgt.
+Jellyfin pikt losse `.srt`-bestanden op een SMB-share niet op, ingebedde ondertitels wel. Deze uitbreiding geeft de synctool daarom twee nieuwe mogelijkheden. Ten eerste: ondertitels die al **in** een MKV zitten opsommen, uithalen, met de bestaande voorkant bijregelen en na het opslaan terugmuxen. Ten tweede: video's met een losse `.srt` ernaast omzetten naar één MKV met de ondertitel erin, zonder te hercoderen — per bestand tijdens het kijken, of desgewenst een hele map in één keer (zie *Hoe dit gebruikt wordt*).
 
 De bestaande weg (losse `.srt` naast de video, `write_srt` met `.orig`-backup) blijft ongewijzigd bestaan en werken. De Jellyfin-kant blijft buiten beschouwing.
+
+## Hoe dit gebruikt wordt
+
+**Dit is een hulpmiddel bij het kijken, geen migratieproject.** Guy pakt de tool op het moment dat een ondertitel niet klopt bij wat er op dat moment op de tv staat: bijregelen, opslaan, verder kijken. Ligt de ondertitel los naast de film, dan bouwt hij hem in één moeite door in de MKV, zodat Jellyfin hem voortaan wél oppakt.
+
+Dat bepaalt de verhouding tussen de twee delen. **De webpagina is het hoofdgebruik**; de bulkweg (`convert.py`, §6) is gereedschap dat er is als het ooit nodig is. De collectie telt 13.443 video's en 17.338 ondertitels (gemeten 2026-09-10), waarvan er 2.573 geen taal in de naam hebben — die komen in dit tempo over jaren één voor één langs, en dan is één tik op een taaltegel de juiste hoeveelheid moeite. Er is dus geen achterstand die weggewerkt moet worden, en waar dit document spreekt over "zodat de collectie één vorm krijgt" is dat een mogelijkheid, geen opdracht.
+
+**De bulkweg mág wel**, en is er niet voor niets: hij is bruikbaar om een enkele serie in één keer om te zetten voordat je eraan begint, of om ooit alsnog de hele collectie te doen. Twee dingen om dan te wegen, die per bestand niet spelen maar over 13.443 bestanden wel:
+
+- Elke omzetting herschrijft de **hele container**, niet alleen de ondertitel. Over de volle collectie is dat vele terabytes schrijfwerk, uren tot dagen.
+- De opslag is ZFS. Draaien er snapshots op `QData/QSerie` of `QData/QFilm`, dan houdt elke herschreven film zijn oude versie vast tot die snapshots verlopen — het ruimtegebruik van de collectie kan daardoor tijdelijk verdubbelen. De ruimtecontrole in §3 kijkt per bestand en ziet dat cumulatieve effect niet. Controleer vooraf met `zfs list -t snapshot -r QData/QSerie`.
 
 ## Aannames
 
@@ -424,7 +435,13 @@ De vijf punten uit de eerste ronde zijn beantwoord. Ze staan hier als korte vera
 
 2. **De mediashares staan niet op de ontwikkelmachine.** Op 192.168.40.250 zijn alleen `/mnt/Developing`, `/mnt/Politiek`, `/mnt/gesture` en `/mnt/homeassistant` gemount; `/mnt/Serie` en `/mnt/Film` niet. De stappen 0 tot en met 8 werken op zelfgemaakte testbestanden in `~/mkvtest` en hebben ze niet nodig, maar **stap 9 (`convert.py scan` over een echte map) en de meting in punt 3 kunnen daar niet uitgevoerd worden.** **Besloten: stap 9 wordt op CT 101 gedraaid**, waar de shares wel staan. De stappen 0 tot en met 8 blijven op de ontwikkelmachine.
 
-3. **Hoeveel bestanden hebben een kale `film.srt` zonder taalaanduiding?** Daar hangt aan of de bulkweg bruikbaar is: die slaat zulke bestanden over. Meet het vóór stap 9, in één regel over de echte collectie, en noteer de uitkomst hier. Is het een kleine minderheid, dan is dit ontwerp klaar. Is het de meerderheid, dan wordt taalherkenning op de inhoud van "later, buiten scope" tot "nu nodig", en dan haakt dat aan als tweede strategie in `lang.detect_srt()` met `source: "content"` — de rest van het ontwerp verandert er niet door.
+3. ~~Hoeveel bestanden hebben een kale `film.srt` zonder taalaanduiding?~~ **Gemeten op 2026-09-10 over de echte collectie** (`convert.py scan /mnt/Serie /mnt/Film` op CT 101): 13.443 video's, 17.338 bijbehorende srt-bestanden. Daarvan 2.475 zonder enige taalaanduiding, 98 met een onherkend label en 0 met twee talen in de naam — samen **2.573 van 17.338, oftewel 15%**.
+
+   Daarmee is de vraag beslist: de naamdetectie dekt 85% en de bulkweg is bruikbaar zoals ontworpen. Maar 15% is te veel om met de hand af te doen (2.573 bestanden à tien seconden is zeven uur), dus punt 4 hieronder komt daaruit voort.
+
+4. ~~Taalherkenning op de inhoud~~ — **besloten: niet bouwen.** Guy geeft de taal zelf op met `--lang`, per map of per serie, voor de gevallen waarin hij weet wat het is. Dat is precies waar die vlag voor gemaakt is: hij geldt uitsluitend voor bestanden zonder taal uit de naam en raakt de overige 85% niet aan. Ondertitels hernoemen blijft eveneens buiten scope: `film.srt` blijft `film.srt`, de taal wordt alleen gebruikt bij het inbouwen.
+
+   Daarmee zijn alle ontwerpvragen beantwoord en staat er niets meer open.
 
 ## Stappen voor de implementer
 
