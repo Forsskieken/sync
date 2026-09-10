@@ -234,6 +234,13 @@ audio{width:100%;margin-top:8px}
   <div class="meta" id="browseHint">Tik om te kiezen, dubbeltik om te openen</div>
   <div class="list" id="browseList"></div>
   <audio id="audio" controls preload="metadata" class="hide"></audio>
+  <!-- Audio wordt niet meer automatisch uitgepakt bij het openen van een
+       bestand: Guy hoort het geluid van de tv of de speler-pc en gebruikt de
+       browser-audio meestal niet, dus dat kostte CPU, tijd en cache-ruimte
+       voor niets. Deze knop start prepare() op verzoek, met dezelfde
+       voortgangsbalk (showProgressUnder, hieronder de bladerlijst) als
+       voorheen. Zichtbaarheid/tekst via updateAudioButton() (S.audioState). -->
+  <button class="act hide" id="bPrepareAudio" style="width:100%;margin-top:8px">Geluid uitpakken</button>
 
   <!-- Omzetknop (blueprint §5, "Omzetknop"): alleen in het lokale paneel,
        en alleen zodra er een losse .srt GESELECTEERD is in #subSel (S.subPath)
@@ -363,11 +370,25 @@ const S = {
   opened:null,        // pad dat geladen is
   videoPath:null,     // pad van de video die nu bijgeregeld wordt (beide modi) - voor de "speler heeft dit open"-waarschuwing
   jobKey:null, jobCancel:null,   // audio-uitpaktaak
+  // idle | loading | done | error - bepaalt of #bPrepareAudio zichtbaar en
+  // klikbaar is. Audio wordt niet meer automatisch uitgepakt bij het openen
+  // (was: prepare() liep vanzelf mee in openEntry()); Guy hoort het geluid
+  // van de tv of de speler-pc en gebruikt de browser-audio meestal niet, dus
+  // dat kostte elk geopend bestand een ffmpeg-run voor niets.
+  audioState:'idle',
   extractCancel:null,            // uithaaltaak van een ingebed spoor
   muxCancel:null,                // mux-poller van doMkvSave() (keuringsbevinding ERNSTIG 2)
   videoFps:null,
   // --- MKV: ingebed spoor (blueprint §3b/§5) ---
   embTracks:[],        // bewerkbare ondertitelsporen van de HUIDIGE video, uit /api/mkv/tracks
+  // ALLE ondertitelsporen (bewerkbaar én beeldspoor), in mkvmerge-volgorde -
+  // uitsluitend voor de weergave in #subSel (blueprint §3, "Beeldondertitels":
+  // "worden opgesomd, maar niet aangeboden om te bewerken"). Bewust een apart
+  // veld naast S.embTracks in plaats van daar de beeldsporen bij te mengen:
+  // loadEmbeddedSub(), refreshTrackAfterSave() en de taalbalk gaan er nu
+  // overal van uit dat ELK spoor in S.embTracks bewerkbaar is, en dat mag zo
+  // blijven - alleen addEmbeddedOptions() heeft de volledige lijst nodig.
+  subTracks:[],
   langButtons:[], langMore:[],   // taaltegels, komen mee met /api/mkv/tracks
   mkvSize:0,             // bytes van de video die herschreven zou worden - voor de bevestigingstekst
   subOrigin:null,        // 'file' (losse .srt) of 'embedded' (spoor in de MKV)
@@ -668,6 +689,14 @@ function resetFileState(){
   // verlaten mag zijn uitkomst niet meer op S toepassen (blueprint §5,
   // "Omzetknop" - dezelfde ERNSTIG 1/2-les als de mux-poller hierboven).
   if(S.convCancel){ S.convCancel(); S.convCancel = null; }
+  // Was hier eerder niet aanwezig, ook al gold dezelfde ERNSTIG 1/2-les als
+  // de drie afmeldingen hierboven: een lopende audio-uitpaktaak van het
+  // bestand dat we verlaten mocht zijn resultaat nog op S toepassen (playAudio
+  // met het verkeerde bestand als src). Dat gat viel eerder nauwelijks op
+  // omdat prepare() vanzelf meeliep met openEntry(); nu prepare() pas op een
+  // tik start, ligt hij vaker "in de lucht" op het moment dat je al naar een
+  // ander bestand doorklikt.
+  if(S.jobCancel){ S.jobCancel(); S.jobCancel = null; }
   // Gedeelde race-guard (zie de S._selToken-toelichting hierboven): een nog
   // lopende /api/mkv/tracks-, /api/subtitle- of /api/mkv/extract-respons van
   // het bestand dat we verlaten mag zich straks niet meer toepassen.
@@ -676,9 +705,19 @@ function resetFileState(){
   S.base = []; S.cues = []; S.ops = []; S.dirty = false;
   S.subPath = null;
   S.subOrigin = null; S.trackId = null; S.trackInfo = null; S.subLangChoice = null;
-  S.mkvPath = null; S.embTracks = []; S.langButtons = []; S.langMore = []; S.mkvSize = 0;
+  S.mkvPath = null; S.embTracks = []; S.subTracks = []; S.langButtons = []; S.langMore = []; S.mkvSize = 0;
   S.subsMeta = {}; S.subMeta = null; S.convLangChoice = null;
+  S.audioState = 'idle';
   listSig = '';
+
+  // Audio hoort net zo bij "per-bestand-toestand" als de rest hierboven: een
+  // geladen of lopende audio van het vorige bestand mag niet blijven staan
+  // (of, erger, straks nog klinken) onder het nu geopende bestand.
+  $('#audio').classList.add('hide');
+  $('#audio').removeAttribute('src');
+  const oldProg = $('#progRow');
+  if(oldProg) oldProg.remove();
+  updateAudioButton();
 
   $('#subProg').classList.add('hide');
   $('#muxProg').classList.add('hide');
@@ -778,20 +817,26 @@ function fillSubs(subs){
 }
 
 // ---------------------------------------------------------------- MKV: sporen ophalen
-// Haalt /api/mkv/tracks op voor het NU geopende bestand en zet de bewerkbare
-// tekstsporen (editable true of "convert", PGS/VobSub blijft buiten de
-// keuzelijst - blueprint "Beeldondertitels") als emb:<id>-opties in #subSel.
+// Haalt /api/mkv/tracks op voor het NU geopende bestand. Bewerkbare
+// tekstsporen (editable true of "convert") komen als emb:<id>-optie in
+// #subSel te staan, precies als voorheen. Beeldsporen (PGS/VobSub,
+// editable:false) verdwenen hier tot voor kort volledig uit de lijst - een
+// bestand met alleen beeldsporen leek zo leeg, terwijl blueprint §3
+// ("Beeldondertitels") voorschrijft dat ze WEL opgesomd worden, alleen niet
+// aangeboden om te bewerken. addEmbeddedOptions() toont ze nu ook, als
+// disabled <option> met de reden erbij (zie de toelichting daar).
 async function loadEmbeddedTracks(path){
   const token = ++S._selToken;
   S.mkvPath = path;
-  S.embTracks = []; S.langButtons = []; S.langMore = [];
+  S.embTracks = []; S.subTracks = []; S.langButtons = []; S.langMore = [];
   try{
     const d = await api('/api/mkv/tracks?path=' + encodeURIComponent(path));
     if(token !== S._selToken) return;   // ondertussen een ander bestand geopend
     S.mkvSize = d.size;
     S.langButtons = d.lang_buttons;
     S.langMore = d.lang_more;
-    S.embTracks = d.tracks.filter(t => t.type === 'subtitles' && t.editable !== false);
+    S.subTracks = d.tracks.filter(t => t.type === 'subtitles');
+    S.embTracks = S.subTracks.filter(t => t.editable !== false);
     addEmbeddedOptions();
     if(S.subOrigin === 'embedded'){
       // Zeldzaam: de gebruiker koos al een ingebed spoor voordat de sporenlijst
@@ -809,29 +854,48 @@ async function loadEmbeddedTracks(path){
     // ondertitelspoor - maar mkvmerge kan hier ook echt falen (corrupt
     // bestand), en dat mag niet stilzwijgend verdwijnen (werkafspraken:
     // fouten afhandelen of doorgeven, nooit negeren).
-    // MATIG 5: S.embTracks is hierboven al leeggemaakt, maar de emb:-opties
-    // in #subSel zelf niet - addEmbeddedOptions() liep tot nu toe alleen in
-    // het succespad. Zonder deze aanroep blijven verweesde opties staan: van
-    // een vorig bestand (als fillSubs() om wat voor reden dan ook nog niet
-    // langs kwam) of, na een geslaagde mux, van vóór de hernummering als de
-    // ververs-aanroep in refreshTrackAfterSave() zelf faalt. Kies je zo'n
-    // optie, dan gaat een track-id van het verkeerde bestand of de verkeerde
-    // (oude) nummering het commando in.
+    // MATIG 5: S.embTracks/S.subTracks zijn hierboven al leeggemaakt, maar de
+    // emb:-opties in #subSel zelf niet - addEmbeddedOptions() liep tot nu toe
+    // alleen in het succespad. Zonder deze aanroep blijven verweesde opties
+    // staan: van een vorig bestand (als fillSubs() om wat voor reden dan ook
+    // nog niet langs kwam) of, na een geslaagde mux, van vóór de hernummering
+    // als de ververs-aanroep in refreshTrackAfterSave() zelf faalt. Kies je
+    // zo'n optie, dan gaat een track-id van het verkeerde bestand of de
+    // verkeerde (oude) nummering het commando in.
     addEmbeddedOptions();
     toast(e.message, 'err');
   }
 }
 
+// Bouwt de emb:-opties in #subSel uit S.subTracks (ALLE ondertitelsporen, in
+// mkvmerge-volgorde - blueprint §3, "Beeldondertitels"). Een bewerkbaar spoor
+// krijgt een gewone, kiesbare optie zoals voorheen. Een beeldspoor (PGS/
+// VobSub, editable:false) krijgt een `disabled` optie met de reden uit
+// identify() erin: zo ziet een mens DAT het spoor bestaat en WAAROM het niet
+// te kiezen is, zonder dat kiezen kan - een disabled <option> is op een
+// tikscherm (Nest Hub) gewoon grijs en niet aan te tikken, dus dit voorkomt
+// vanzelf een mislukte extract-aanvraag of een verwarrende foutmelding
+// achteraf. Geen apart voorvoegsel of eigen widget nodig: de native <select>
+// regelt "wel zichtbaar, niet kiesbaar" al precies zoals hier nodig is.
 function addEmbeddedOptions(){
   const sel = $('#subSel');
   const cur = sel.value;   // een al gekozen losse .srt mag niet resetten
   [...sel.querySelectorAll('option[data-emb]')].forEach(o => o.remove());
-  S.embTracks.forEach(t=>{
+  S.subTracks.forEach(t=>{
     const o = document.createElement('option');
-    o.value = 'emb:' + t.id;
     o.dataset.emb = '1';
-    const codec = t.editable === 'convert' ? `${t.codec} → wordt SRT` : t.codec;
-    o.textContent = `[${t.id}] ${t.language_display} · ${codec} (ingebed)`;
+    if(t.editable === false){
+      // value='' net als de lege "-"-optie: kan sowieso niet gekozen worden
+      // (disabled), dus een botsende waarde is hier ongevaarlijk - zie de
+      // toelichting bij addEmbeddedOptions() hierboven.
+      o.value = '';
+      o.disabled = true;
+      o.textContent = `[${t.id}] ${t.language_display} · ${t.reason || 'niet bewerkbaar'}`;
+    } else {
+      o.value = 'emb:' + t.id;
+      const codec = t.editable === 'convert' ? `${t.codec} → wordt SRT` : t.codec;
+      o.textContent = `[${t.id}] ${t.language_display} · ${codec} (ingebed)`;
+    }
     sel.appendChild(o);
   });
   sel.value = cur;
@@ -1479,11 +1543,11 @@ function openEntry(e){
   S.opened = e.path;
   S.selected = e.path;
   paintList();
-  $('#audio').classList.add('hide');
-  $('#audio').removeAttribute('src');
   // MATIG 4 / gedeelde oorzaak: de volledige per-bestand-toestand (cues,
   // subPath, mkv-koppeling, taalkeuze, lopende taken) hoort hier niet te
-  // blijven staan - anders zie je bestand B terwijl je aan A werkt.
+  // blijven staan - anders zie je bestand B terwijl je aan A werkt. Dit ruimt
+  // ook #audio en een eventuele #progRow van het vorige bestand op (zie de
+  // toelichting daar), dus die twee regels hoeven hier niet meer apart.
   resetFileState();
   fillSubs(e.subtitles);
   // Ná fillSubs, niet ervoor: sporen ophalen is een aparte, tragere
@@ -1491,19 +1555,58 @@ function openEntry(e){
   // (blueprint §5: "altijd na find_srts, zodat een trage -J de rest niet
   // ophoudt"). loadEmbeddedTracks() is zelf async en blokkeert dus niets.
   loadEmbeddedTracks(e.path);
-  showProgressUnder(e.path);
   loadFps(e.path);
-  prepare(e.path);
+  // Audio wordt NIET meer automatisch uitgepakt (was hier: prepare(e.path)).
+  // Guy hoort het geluid van de tv of de speler-pc en gebruikt de
+  // browser-audio meestal niet; elk geopend bestand startte zo een ffmpeg-run
+  // (CPU, tijd, cache-ruimte) die hij niet nodig had. #bPrepareAudio start
+  // prepare() nu pas op een tik, met dezelfde voortgangsbalk als voorheen.
+  updateAudioButton();
 }
 
 // ---------------------------------------------------------------- uitpakken
+function updateAudioButton(){
+  const btn = $('#bPrepareAudio');
+  // Alleen zinvol in de lokale modus, op een geopend bestand, en zolang er
+  // geen audio geladen is - "netjes verborgen ... in plaats van stuk" voor
+  // wat zonder een geladen bestand sowieso niets kan doen.
+  const show = S.mode === 'local' && !!S.opened && S.audioState !== 'done';
+  btn.classList.toggle('hide', !show);
+  if(!show) return;
+  btn.disabled = S.audioState === 'loading';
+  btn.textContent = S.audioState === 'loading' ? 'Geluid wordt uitgepakt…'
+    : S.audioState === 'error' ? 'Opnieuw proberen' : 'Geluid uitpakken';
+}
+
 async function prepare(path){
+  // GEVONDEN MET DE CDP-BROWSERTEST: /api/audio/prepare geeft meteen
+  // {state:'done'} terug als hetzelfde bestand al eens uitgepakt is (de
+  // uitpak-cache van app.py) - dus als je "Geluid uitpakken" tikt en
+  // ONMIDDELLIJK daarna een ANDER bestand opent, komt dat antwoord terug
+  // terwijl het geopende bestand alweer veranderd is. Zonder deze bewaking
+  // zou playAudio() dan de audio van het VERLATEN bestand op het NU geopende
+  // bestand zetten - dezelfde ERNSTIG 1/2-les als bij loadSub()/
+  // loadEmbeddedSub() hierboven, nu voor audio. Geen eigen teller: dit is
+  // geen nieuwe "selectie" (dat blijft het gedeelde S._selToken uit de
+  // toelichting bij dat veld), maar resetFileState() hoogt S._selToken al bij
+  // ELKE bestandswissel op, dus lezen zonder ophogen volstaat hier.
+  const token = S._selToken;
   if(S.jobCancel) S.jobCancel();
+  S.audioState = 'loading';
+  updateAudioButton();
+  // Vroeger riep openEntry() dit onvoorwaardelijk aan zodra een bestand
+  // openging; nu is er pas iets te tonen zodra prepare() ook echt draait.
+  showProgressUnder(path);
   try{
     const d = await api('/api/audio/prepare',{method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
+    if(token !== S._selToken) return;   // ondertussen een ander bestand geopend
     S.jobKey = d.key;
-    if(d.state === 'done'){ playAudio(d.key); setProg(100,'gereed','done'); return; }
+    if(d.state === 'done'){
+      playAudio(d.key); setProg(100,'gereed','done');
+      S.audioState = 'done'; updateAudioButton();
+      return;
+    }
     setProg(0, d.copy ? `${d.codec} \u2014 kopiëren` : `${d.codec} \u2192 aac hercoderen`);
     // Gebruikt dezelfde generieke pollJob(url, ...) als de MKV-taken hieronder
     // (blueprint §5: "pollJob() wordt veralgemeend naar /api/mkv/job") - hier
@@ -1511,12 +1614,28 @@ async function prepare(path){
     // generieke poller verderop in dit bestand; de laatst gedefinieerde functie
     // wint in JavaScript, dus die tweede definitie maakte de generieke poller
     // ongemerkt dode code. Eén poller, geen naamsbotsing meer.
+    //
+    // Vanaf hier is de bewaking al dubbel geregeld, zoals bij
+    // loadEmbeddedSub(): zodra S.jobCancel hieronder gezet is, meldt
+    // resetFileState() de poller zelf af vóór hij nog een onTick/onDone/
+    // onError kan afvuren - een token-controle in die callbacks zou dus
+    // niets meer beschermen dat de cancel-functie niet al beschermt.
     S.jobCancel = pollJob('/api/audio/progress?key=' + encodeURIComponent(d.key), {
       onTick: dd => setProg(dd.percent, dd.copy ? 'kopiëren' : 'hercoderen naar aac'),
-      onDone: dd => { setProg(100, 'gereed', 'done'); playAudio(d.key); },
-      onError: dd => { setProg(100, dd.error || 'uitpakken mislukt', 'err'); toast('Uitpakken mislukt','err'); },
+      onDone: dd => {
+        setProg(100, 'gereed', 'done'); playAudio(d.key);
+        S.audioState = 'done'; updateAudioButton();
+      },
+      onError: dd => {
+        setProg(100, dd.error || 'uitpakken mislukt', 'err'); toast('Uitpakken mislukt','err');
+        S.audioState = 'error'; updateAudioButton();
+      },
     });
-  }catch(e){ toast(e.message,'err'); }
+  }catch(e){
+    if(token !== S._selToken) return;
+    toast(e.message,'err');
+    S.audioState = 'error'; updateAudioButton();
+  }
 }
 
 function setProg(pct, txt, cls=''){
@@ -1535,6 +1654,9 @@ function playAudio(key){
 }
 
 // ---------------------------------------------------------------- events
+$('#bPrepareAudio').onclick = () => {
+  if(S.opened && S.audioState !== 'loading') prepare(S.opened);
+};
 $('#mTv').onclick = ()=> setMode('tv');
 $('#mLocal').onclick = ()=> setMode('local');
 function setMode(m){
@@ -1546,6 +1668,9 @@ function setMode(m){
   $('#bReload').disabled = m!=='tv';
   if(m==='local'){ $('#dot').className='dot'; browse($('#browsePath').value); }
   else { $('#audio').pause(); poll(); }
+  // De knop hoort uitsluitend bij de lokale modus (blueprint: verborgen, niet
+  // stuk, als de handeling hier niets kan doen).
+  updateAudioButton();
 }
 
 $('#sHere').onclick = ()=> setScope('here');
