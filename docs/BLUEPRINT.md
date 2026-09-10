@@ -15,7 +15,7 @@ Dat bepaalt de verhouding tussen de twee delen. **De webpagina is het hoofdgebru
 **De bulkweg mág wel**, en is er niet voor niets: hij is bruikbaar om een enkele serie in één keer om te zetten voordat je eraan begint, of om ooit alsnog de hele collectie te doen. Twee dingen om dan te wegen, die per bestand niet spelen maar over 13.443 bestanden wel:
 
 - Elke omzetting herschrijft de **hele container**, niet alleen de ondertitel. Over de volle collectie is dat vele terabytes schrijfwerk, uren tot dagen.
-- De opslag is ZFS. Draaien er snapshots op `QData/QSerie` of `QData/QFilm`, dan houdt elke herschreven film zijn oude versie vast tot die snapshots verlopen — het ruimtegebruik van de collectie kan daardoor tijdelijk verdubbelen. De ruimtecontrole in §3 kijkt per bestand en ziet dat cumulatieve effect niet. Controleer vooraf met `zfs list -t snapshot -r QData/QSerie`.
+- De opslag is ZFS, dus snapshots zouden elke herschreven film in zijn oude vorm vasthouden en het ruimtegebruik van de collectie kunnen verdubbelen. **Gemeten 2026-09-10: er zijn geen snapshots** op `QData/QSerie` of `QData/QFilm` (`zfs list -t snapshot -r` geeft "no datasets available"), en er is 5,38 TB vrij tegenover 10,8 TB serie en 3,55 TB film. Zonder snapshots geeft ZFS de oude versie na de rename meteen vrij, dus een omzetting kost netto alleen de ondertitel — enkele honderden kilobytes. De piek blijft één bestandsgrootte, wat de ruimtecontrole in §3 per bestand al afvangt. **Een bulkrun is dus ruimtetechnisch veilig**; komen er later wél snapshots op deze datasets, dan geldt de waarschuwing hierboven alsnog.
 
 ## Aannames
 
