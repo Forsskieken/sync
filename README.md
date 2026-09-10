@@ -25,6 +25,11 @@ buttons go down to a tenth of a second.
   further apart the longer it runs; converting rescales the whole file at once.
 - Audio that Chrome cannot play is re-encoded to AAC in the background, with a
   progress bar; anything already playable is copied straight through.
+- **Nudge subtitles embedded in an MKV**, not just loose `.srt` files: pick a
+  track, fix the timing, save it back into the container.
+- **Convert to MKV.** A video with a loose `.srt` next to it becomes one MKV
+  with the subtitle built in, without re-encoding, so the collection ends up
+  in one shape.
 
 ## Install
 
@@ -42,7 +47,7 @@ nobody and saving fails. That makes the account uid 1001, gid 1005.
 **As root, once:**
 
 ```bash
-apt update && apt install -y git python3-venv ffmpeg
+apt update && apt install -y git python3-venv ffmpeg mkvtoolnix
 
 # The group first, with the gid the share already uses.
 getent group family || groupadd -g 1005 family
@@ -54,6 +59,19 @@ usermod -aG family jan
 id jan                       # check: uid=1001 gid=1005(family)
 install -d -o jan -g family /opt/subtitle-sync
 ```
+
+`mkvtoolnix` here is the CLI package (`mkvmerge`, `mkvextract`); the GUI
+package (`mkvtoolnix-gui`) is not needed and drags in a desktop toolkit.
+Version 68 or newer has the current flag names (`--default-track-flag`
+instead of `--default-track`); below 50 the MKV features are refused
+outright. Check what you got with `mkvmerge --version`.
+
+**A locale quirk, not a bug to fix.** mkvtoolnix aborts on a locale it
+doesn't recognize (`std::runtime_error … locale::facet::_S_create_c_locale`),
+which happens on a bare `LANG=C` — exactly what a systemd unit's environment
+tends to be. The code already sets `LC_ALL=C.UTF-8` on every `mkvmerge`/
+`mkvextract` call for that reason; nothing needs to be done for it here, it
+is just worth knowing so nobody "fixes" it by removing that.
 
 `groupadd -g` and `useradd -u` are where the numbers come from. Pick the gid
 that the media share already uses — `ls -n` on it shows the number — rather
@@ -135,6 +153,56 @@ over an SSH tunnel: `ssh -L 8099:127.0.0.1:8099 jan@<host>`.
 
 The user needs read and write access to everything under `ALLOWED_ROOTS`.
 
+## Embedded subtitles
+
+- The track picker lists embedded tracks alongside loose `.srt` files. Pick
+  one, load it, nudge it like any other track, then save it back into the
+  container.
+- A SubRip track (`S_TEXT/UTF8`) edits directly. ASS/SSA/WebVTT tracks can be
+  edited too, but only by replacing them with SubRip on save — styling and
+  positioning are lost, and the page asks an extra confirmation first. PGS and
+  VobSub (picture subtitles) are shown but not editable, since there is no
+  OCR; they pass through untouched.
+- Safety order, always: mux into a hidden `.<name>.syncpart` chunk **in the
+  same directory** as the original, check it (track counts, duration, cue
+  count and text), only then swap it in atomically. Any failed check leaves
+  the original untouched.
+- **No backup is kept once a save succeeds** — the check beforehand is the
+  safeguard, not a copy afterwards. Close the file in the player first: one
+  still holding it open can make the atomic swap fail.
+
+## Converting to MKV
+
+- The button for the file you have open (`Naar MKV omzetten` for a loose
+  `.srt` next to a non-MKV video, `Ondertitel inbouwen` when it's already an
+  MKV) does one file, in two confirming taps, with the same safety order as
+  above.
+- `convert.py` does the rest of the collection from the command line: `scan`
+  only reports; `run` without `--apply` is a dry run too and writes nothing.
+  Only `run --apply` touches files. See `convert.py --help`.
+- `convert.py` needs the **same** `ALLOWED_ROOTS` and `CACHE_DIR` as the
+  running service — its lock file must point at the same place, or two
+  rewrites of the same file could run at once. Source the service's env file
+  before running it: `set -a; . ./subtitle-sync.env; set +a`.
+- The loose `.srt` is kept next to the video after embedding, unless
+  `--drop-srt` is given.
+
+## Subtitle language
+
+- The language comes from the filename suffix: `film.nl.srt`, `film.eng.srt`,
+  `film.Dutch.srt`.
+- `dut` and `nld` are the same language to this tool. mkvmerge fills its own
+  IETF language field, so a track this tool writes reads back correctly even
+  though the older three-letter field comes back as the B-code (`dut`).
+- `.forced`, `.sdh`, `.hi` and `.cc` are markers, not languages — so `.hi`
+  means hearing impaired, not Hindi. Write `.hin` if you mean Hindi.
+- A file whose language can't be determined is asked about in the browser
+  (tap a tile) and skipped in a bulk run, unless `--lang <code>` is given.
+
+Chunks left behind by a crash — `.<name>.syncpart` or `.<name>.syncold` — are
+safe to delete by hand; the original video is never touched until a chunk has
+passed every check.
+
 ## Configuration
 
 All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
@@ -145,7 +213,10 @@ All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
 | `JELLYFIN_API_KEY` | Jellyfin API key. The only secret |
 | `PATH_MAP` | JSON: how Jellyfin's paths map onto this machine's |
 | `ALLOWED_ROOTS` | JSON list. Browsing and saving happen only inside these |
-| `CACHE_DIR` | Where converted audio is kept. `CacheDirectory=` in the unit creates it |
+| `CACHE_DIR` | Where converted audio and extracted embedded subtitles are kept. `CacheDirectory=` in the unit creates it |
+| `LOG_LEVEL` | `DEBUG`, `INFO` (default), `WARNING`, `ERROR`, `CRITICAL`. `DEBUG` also tells you why a `.srt` next to a video was left out of the list |
+| `SUB_LANG_BUTTONS` | JSON list, which language tiles the page offers first when embedding or replacing a subtitle track. A display preference — it never labels anything by itself. Default `["nld","eng"]` |
+| `HA_WEBHOOK_URL` | Optional. `convert.py run --apply` posts its summary line here when set; unset means no notification and no error. Not used by the web service |
 
 ## Security
 
@@ -155,12 +226,14 @@ All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
 - **Opening it to the network** is a second `ExecStart` line in the unit, ready
   to swap in. On a home network among people you trust that is a fair trade; on
   anything else it means everyone who can reach the port can rewrite your
-  subtitle files.
+  subtitle files — and, since the MKV conversion arrived, rewrite and delete
+  media files under `ALLOWED_ROOTS` too, not just subtitles.
 - **Not as root.** It runs as an ordinary user who has access to `ALLOWED_ROOTS`
   and nothing more.
 - Every path is resolved before use and must sit inside `ALLOWED_ROOTS`, so
   `..` and symlinks cannot walk out (`safe_path` in `app.py`).
-- Saving writes a backup first and reports its name.
+- Saving a loose `.srt` writes a backup first and reports its name; saving into
+  or converting to an MKV does not — see *Embedded subtitles* above.
 
 ## The API
 
@@ -176,3 +249,8 @@ All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
 | `/api/audio?key=` | GET | The audio stream |
 | `/api/player/seek` | POST | Move the TV player to a position |
 | `/api/player/reload` | POST | Reload the subtitle track on the TV |
+| `/api/mkv/tracks?path=` | GET | Tracks in a container, with `editable`/`reason` per track and the language tiles to offer |
+| `/api/mkv/extract` | POST | `{path, track_id}` → starts extracting an embedded track, returns `{job}` |
+| `/api/mkv/job?id=` | GET | State, percentage, phase and error of a track/mux job; a finished extract also carries `cues` |
+| `/api/mkv/save` | POST | `{path, track_id, cues, language?}` → starts the mux back into the container. Omit `language` to keep the old track's language and flags |
+| `/api/mkv/ingest` | POST | `{video_path, srt_path, language?, drop_srt?}` → starts converting to MKV / embedding the loose subtitle |

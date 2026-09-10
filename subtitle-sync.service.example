@@ -4,6 +4,11 @@
 Description=subtitle-sync - nudge subtitle timings
 After=network-online.target
 Wants=network-online.target
+# Restart=on-failure alone would retry forever on a genuinely broken build
+# (bad code, missing dependency). This caps it at 5 restarts per 5 minutes,
+# after which systemd gives up and the unit stays failed instead of looping.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

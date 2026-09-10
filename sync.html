@@ -179,6 +179,20 @@ audio{width:100%;margin-top:8px}
 .prog .lbl b{font-weight:600;color:var(--cyan)}
 .prog.err .lbl{color:var(--red)}
 
+/* ---- MKV: taalregel en tegels ---- */
+.langLine{
+  font:600 13px/1.4 var(--sans);color:var(--cyan);cursor:pointer;
+  padding:2px 0;
+}
+.langTiles{margin-top:8px}
+.langTiles .grid{margin-bottom:8px}
+
+/* ---- MKV: waarschuwing vóór de ASS/SSA-bevestiging ---- */
+.saveWarn{
+  font:600 12px/1.4 var(--sans);color:var(--red);
+  text-align:center;margin-bottom:8px;
+}
+
 .toast{
   position:fixed;left:50%;bottom:18px;transform:translateX(-50%);
   background:var(--raised);border:1px solid var(--line);border-radius:8px;
@@ -220,12 +234,61 @@ audio{width:100%;margin-top:8px}
   <div class="meta" id="browseHint">Tik om te kiezen, dubbeltik om te openen</div>
   <div class="list" id="browseList"></div>
   <audio id="audio" controls preload="metadata" class="hide"></audio>
+
+  <!-- Omzetknop (blueprint §5, "Omzetknop"): alleen in het lokale paneel,
+       en alleen zodra er een losse .srt GESELECTEERD is in #subSel (S.subPath)
+       - dat is precies welk bestand straks ingebouwd wordt, dezelfde
+       eenduidigheid als bij het bewerken van een ingebed spoor. Los van
+       #mkvBar hieronder: dat paneel hoort bij het BEWERKEN van een spoor dat
+       al in de cue-editor geladen is, dit paneel bij het ONGEWIJZIGD
+       inbouwen van een losse srt in een nieuwe of bestaande MKV - twee
+       verschillende handelingen die toevallig dezelfde taalkeuze-UI uit §3b
+       nodig hebben. -->
+  <section class="panel hide" id="convertBar" style="margin-top:10px;padding:14px;margin-bottom:0">
+    <div class="eyebrow" style="margin-bottom:8px">Omzetten</div>
+    <div class="langLine" id="convLangLine">Taal: Onbekend</div>
+    <div class="langTiles hide" id="convLangTiles">
+      <div class="grid" id="convLangTilesMain"></div>
+      <div class="grid six hide" id="convLangTilesOther"></div>
+    </div>
+    <div class="prog hide" id="convProg" style="margin-top:8px;padding:0;border-bottom:0">
+      <div class="lbl"><span id="convTxt">omzetten</span><b id="convPct">0%</b></div>
+      <div class="bar"><div class="fill" id="convFill"></div></div>
+    </div>
+    <button class="act primary" id="bConvert" style="margin-top:8px;width:100%" disabled>Naar MKV omzetten</button>
+  </section>
 </section>
 
 <!-- ondertitelkeuze -->
 <section class="panel" id="subBar">
   <div class="eyebrow" style="margin-bottom:8px">Ondertitel</div>
   <select id="subSel"><option value="">-</option></select>
+  <!-- Uithalen van een ingebed spoor gaat over de hele MKV (blueprint §3,
+       "Uithalen": "op een grote MKV over CIFS is dat tientallen seconden"),
+       dus dit toont dezelfde .prog-component als de audio-omzetting. Staat
+       hier vast in de pagina (niet onder een bladerlijstregel, zoals de
+       audiovoortgang) omdat de TV-modus geen bladerlijst heeft om iets
+       onder te hangen. -->
+  <div class="prog hide" id="subProg" style="margin-top:8px;padding:0;border-bottom:0">
+    <div class="lbl"><span id="subProgTxt">uithalen</span><b id="subProgPct">0%</b></div>
+    <div class="bar"><div class="fill" id="subProgFill"></div></div>
+  </div>
+</section>
+
+<!-- MKV: taal van het ingebouwde spoor, alleen zichtbaar bij een ingebed
+     spoor. Los van #subBar omdat de taalkeuze bij de OPSLAG-handeling hoort,
+     niet bij de keuzelijst - blueprint §3b, "De voorkant". -->
+<section class="panel hide" id="mkvBar">
+  <div class="eyebrow" style="margin-bottom:8px">Taal in de MKV</div>
+  <div class="langLine" id="langLine">Taal: Onbekend</div>
+  <div class="langTiles hide" id="langTiles">
+    <div class="grid" id="langTilesMain"></div>
+    <div class="grid six hide" id="langTilesOther"></div>
+  </div>
+  <div class="prog hide" id="muxProg" style="margin-top:8px;padding:0;border-bottom:0">
+    <div class="lbl"><span id="muxTxt">muxen</span><b id="muxPct">0%</b></div>
+    <div class="bar"><div class="fill" id="muxFill"></div></div>
+  </div>
 </section>
 
 <!-- klok + cue -->
@@ -271,6 +334,10 @@ audio{width:100%;margin-top:8px}
   <div class="fpsNote">Werkt altijd op het hele bestand, verankerd op 00:00:00.</div>
 </details>
 
+<!-- ASS/SSA-waarschuwing (blueprint §5, "Drie tikken bij ASS/SSA") - alleen
+     zichtbaar tijdens die tussenstap, verdwijnt weer zodra de normale
+     bevestiging met de omvang verschijnt. -->
+<div class="saveWarn hide" id="saveWarn"></div>
 <div class="grid four" style="margin-bottom:10px">
   <button class="act" id="bUndo" disabled>Ongedaan</button>
   <button class="act" id="bReset" disabled>Herstel</button>
@@ -294,8 +361,40 @@ const S = {
   pos:0, posAt:0, paused:true,
   selected:null,      // pad dat aangetikt is
   opened:null,        // pad dat geladen is
-  jobKey:null, jobTimer:null,
+  videoPath:null,     // pad van de video die nu bijgeregeld wordt (beide modi) - voor de "speler heeft dit open"-waarschuwing
+  jobKey:null, jobCancel:null,   // audio-uitpaktaak
+  extractCancel:null,            // uithaaltaak van een ingebed spoor
+  muxCancel:null,                // mux-poller van doMkvSave() (keuringsbevinding ERNSTIG 2)
   videoFps:null,
+  // --- MKV: ingebed spoor (blueprint §3b/§5) ---
+  embTracks:[],        // bewerkbare ondertitelsporen van de HUIDIGE video, uit /api/mkv/tracks
+  langButtons:[], langMore:[],   // taaltegels, komen mee met /api/mkv/tracks
+  mkvSize:0,             // bytes van de video die herschreven zou worden - voor de bevestigingstekst
+  subOrigin:null,        // 'file' (losse .srt) of 'embedded' (spoor in de MKV)
+  mkvPath:null, trackId:null, trackInfo:null,
+  // null = taal van het oude spoor blijft staan (blueprint §3b: "er wordt niets
+  // afgeleid en niets geraden"); {code, display} pas na een tik op een tegel.
+  subLangChoice:null,
+  mkvSaveStage:0, mkvSaveTimer:null,
+  // Gedeelde race-guard (keuringsronde stap-8-reparatie, ERNSTIG 1): één
+  // oplopend volgnummer voor "welke ondertitel-selectie/spoorlijst hoort bij
+  // wat er nu op het scherm staat". Elke functie die een aanvraag start die
+  // ná een await nog S overschrijft (loadEmbeddedTracks, loadSub,
+  // loadEmbeddedSub) haalt hem eerst op met ++S._selToken; komt het
+  // antwoord terug terwijl het volgnummer inmiddels is opgehoogd door een
+  // latere selectie, dan is dit antwoord verlaten en wordt het genegeerd.
+  // Was eerder alleen _embToken, uitsluitend voor de sporenlijst - drie
+  // losse tokens (één per functie) zouden precies hetzelfde controleren met
+  // drie keer dezelfde vergelijking; deze ene teller, opgehoogd bij elke
+  // gebeurtenis die de selectie kan wijzigen, dekt alle gevallen met minder
+  // code en zonder dat een fix in de ene functie de andere kan vergeten.
+  _selToken:0,
+  // --- MKV: omzetknop / ingest (blueprint §5, "Omzetknop") ---
+  subsMeta:{},      // pad -> taaloordeel (uit find_srts, meegekomen met fillSubs())
+  subMeta:null,     // taaloordeel van de GESELECTEERDE losse srt (S.subPath) - bepaalt de knoptekst
+  convCancel:null,  // voortgang-poller van doConvert()
+  convLangChoice:null,
+  convStage:0, convTimer:null,
 };
 
 // ---------------------------------------------------------------- util
@@ -322,6 +421,48 @@ async function api(path, opts){
     throw new Error(d);
   }
   return r.json();
+}
+
+// Eén generieke poller voor elk takenmodel met {state, percent, error} -
+// zowel /api/audio/progress als /api/mkv/job voldoen daaraan (blueprint §5,
+// "pollJob() wordt veralgemeend naar /api/mkv/job"). Peilt meteen (niet pas
+// na het eerste interval) zodat een taak die al klaar is niet nodeloos 700 ms
+// op zijn eerste update hoeft te wachten. Geeft een afmeldfunctie terug zodat
+// de aanroeper kan stoppen met pollen als de gebruiker intussen iets anders
+// opent.
+function pollJob(url, {interval=700, onTick, onDone, onError} = {}){
+  let timer = null, stopped = false;
+  async function tick(){
+    if(stopped) return;
+    try{
+      const d = await api(url);
+      if(stopped) return;
+      onTick && onTick(d);
+      if(d.state === 'done'){ clearInterval(timer); onDone && onDone(d); }
+      else if(d.state === 'error'){ clearInterval(timer); onError && onError(d); }
+    }catch(e){
+      clearInterval(timer);
+      onError && onError({error: e.message});
+    }
+  }
+  tick();
+  timer = setInterval(tick, interval);
+  return () => { stopped = true; clearInterval(timer); };
+}
+
+// Weergave in decimale GB/MB (net als een bestandsbeheerder laat zien) -
+// dit getal wordt nergens in een berekening gebruikt, alleen in de
+// bevestigingstekst ("Bevestig · herschrijft 4,2 GB", blueprint §5).
+function fmtSize(bytes){
+  if(!bytes) return '? MB';
+  const gb = bytes / 1_000_000_000;
+  if(gb >= 1) return gb.toFixed(1).replace('.', ',') + ' GB';
+  return Math.round(bytes / 1_000_000) + ' MB';
+}
+function fmtDur(s){
+  s = Math.max(0, Math.round(s || 0));
+  const m = Math.floor(s / 60), sec = s % 60;
+  return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
 // ---------------------------------------------------------------- cues
@@ -466,7 +607,7 @@ function render(){
 
   $('#bUndo').disabled = !S.ops.length;
   $('#bReset').disabled = !S.ops.length;
-  $('#bSave').disabled = !S.dirty;
+  updateSaveButton();
   $('#cueCount').textContent = S.cues.length ? `\u00b7 ${S.cues.length}` : '';
   renderList(ci);
 }
@@ -505,27 +646,729 @@ async function seekTo(ms){
   }catch(e){ toast(e.message,'err'); }
 }
 
+// ---------------------------------------------------------------- opruimen bij bestandswissel
+// Keuringsronde op stap 7, bevindingen 1, 2, 4 en 5: die hebben allemaal
+// dezelfde oorzaak. De per-bestand-toestand (cues, mkv-koppeling, taalkeuze,
+// lopende taken) werd verspreid opgeruimd - een stukje in openEntry(), een
+// ANDER stukje in poll(), en dat tweede stukje sloeg zelfs over bij dirty.
+// Vijf losse pleisters zouden hetzelfde euvel herhalen: elke plek die apart
+// bijhoudt welke velden van S bij een bestandswissel horen, loopt vanzelf
+// weer uiteen zodra er een zesde veld bijkomt - dat is precies hoe deze vijf
+// bevindingen zijn ontstaan. Daarom nu één functie, aangeroepen op elk pad
+// waar het geopende bestand verandert (openEntry(), poll() bij een nieuw
+// item_id), die de volledige per-bestand-toestand in één keer opruimt.
+function resetFileState(){
+  // ERNSTIG 1 en 2: een taak van het bestand dat we verlaten mag zijn
+  // uitkomst niet meer op de (dan foute) S toepassen zodra hij klaar komt.
+  // De taak zelf op de server loopt gewoon door - een mux rondt af en
+  // vervangt het bestand op schijf, alleen luisteren we hier niet meer naar.
+  if(S.extractCancel){ S.extractCancel(); S.extractCancel = null; }
+  if(S.muxCancel){ S.muxCancel(); S.muxCancel = null; }
+  // Zelfde reden als hierboven: een omzet-/inbouwtaak van het bestand dat we
+  // verlaten mag zijn uitkomst niet meer op S toepassen (blueprint §5,
+  // "Omzetknop" - dezelfde ERNSTIG 1/2-les als de mux-poller hierboven).
+  if(S.convCancel){ S.convCancel(); S.convCancel = null; }
+  // Gedeelde race-guard (zie de S._selToken-toelichting hierboven): een nog
+  // lopende /api/mkv/tracks-, /api/subtitle- of /api/mkv/extract-respons van
+  // het bestand dat we verlaten mag zich straks niet meer toepassen.
+  S._selToken++;
+
+  S.base = []; S.cues = []; S.ops = []; S.dirty = false;
+  S.subPath = null;
+  S.subOrigin = null; S.trackId = null; S.trackInfo = null; S.subLangChoice = null;
+  S.mkvPath = null; S.embTracks = []; S.langButtons = []; S.langMore = []; S.mkvSize = 0;
+  S.subsMeta = {}; S.subMeta = null; S.convLangChoice = null;
+  listSig = '';
+
+  $('#subProg').classList.add('hide');
+  $('#muxProg').classList.add('hide');
+  $('#convProg').classList.add('hide');
+  $('#convLangTiles').classList.add('hide');
+  $('#convLangTilesOther').classList.add('hide');
+  // MATIG 5: verweesde emb:-opties expliciet verwijderen in plaats van te
+  // vertrouwen op de fillSubs()-aanroep die er meestal toch achteraan komt -
+  // deze functie moet op zichzelf al een schone lei opleveren, ook op de
+  // plek waar hij zonder fillSubs() gebruikt wordt (refreshTrackAfterSave()).
+  [...$('#subSel').querySelectorAll('option[data-emb]')].forEach(o => o.remove());
+
+  resetSaveStage();
+  resetConvertStage();
+  updateMkvBar();
+  render();
+}
+
 // ---------------------------------------------------------------- ondertitels
-async function loadSub(path){
-  if(!path){ S.base=[]; S.cues=[]; S.ops=[]; S.dirty=false; S.subPath=null;
-             listSig=''; render(); return; }
+// Eén keuzelijst voor losse .srt's ÉN ingebedde sporen (blueprint §5): de
+// optiewaarde is het pad voor een losse srt, "emb:<track_id>" voor een spoor
+// in de MKV zelf. loadSub() splitst op dat voorvoegsel.
+async function loadSub(value){
+  // Keuringsronde stap-8-reparatie, ERNSTIG 1: deze functie had geen
+  // volgnummer zoals loadEmbeddedTracks() (S._embToken, nu het gedeelde
+  // S._selToken) al wel had. Twee srt-keuzes vlak na elkaar starten allebei
+  // een fetch naar /api/subtitle, en twee gelijktijdige fetches garanderen
+  // geen volgorde in hun antwoorden - het antwoord van de EERSTE keuze kon
+  // dus na dat van de TWEEDE binnenkomen en op dat moment nog steeds
+  // S.subPath overschrijven. S.subMeta (de taal, de knoptekst) hoorde dan al
+  // bij de tweede keuze, maar S.subPath (wat doConvert() daadwerkelijk als
+  // srt_path naar /api/mkv/ingest stuurt) bleef bij de eerste - een andere
+  // srt dan getoond, onherroepelijk gemuxt. `token` lost dat op: elke
+  // aanroep haalt eerst een nieuw volgnummer op, en een antwoord dat pas
+  // binnenkomt nadat de gebruiker alweer iets anders koos (S._selToken staat
+  // dan al hoger) wordt genegeerd in plaats van toegepast.
+  const token = ++S._selToken;
+  if(S.extractCancel){ S.extractCancel(); S.extractCancel = null; }
+  $('#subProg').classList.add('hide');
+  if(!value){
+    S.base=[]; S.cues=[]; S.ops=[]; S.dirty=false; S.subPath=null;
+    S.subOrigin=null; S.trackId=null; S.trackInfo=null; S.subLangChoice=null;
+    S.subMeta=null; resetConvertStage();
+    listSig=''; render(); updateMkvBar(); return;
+  }
+  if(value.startsWith('emb:')){
+    await loadEmbeddedSub(parseInt(value.slice(4), 10));
+    return;
+  }
+  S.subOrigin = 'file'; S.trackId = null; S.trackInfo = null; S.subLangChoice = null;
+  // Het taaloordeel van DEZE srt (blueprint §5, "Omzetknop") - komt al mee
+  // met find_srts()/fillSubs(), geen extra aanroep nodig.
+  S.subMeta = S.subsMeta[value] || null;
+  S.convLangChoice = null;
+  updateMkvBar();
+  // GEVONDEN MET DE CDP-BROWSERTEST (niet met lezen te vinden): de
+  // omzetknop moet ook zichtbaar worden zodra S.subPath gezet is, maar
+  // S.subPath wordt pas na de await hieronder gevuld. Een resetConvertStage()
+  // hier vóór de fetch zag dus nog het OUDE (vaak null) S.subPath - bv. na
+  // eerst een ingebed spoor te hebben gekozen (dat S.subPath op null zet) en
+  // dan terug te schakelen naar een losse srt bleef de knoppenrij verstopt
+  // tot de eerstvolgende, ongerelateerde hertekening. Vandaar nu OOK een
+  // aanroep ná het zetten van S.subPath, in beide takken van de try/catch.
+  resetConvertStage();
   try{
-    const d = await api('/api/subtitle?path=' + encodeURIComponent(path));
+    const d = await api('/api/subtitle?path=' + encodeURIComponent(value));
+    if(token !== S._selToken) return;   // ERNSTIG 1: een latere keuze is intussen leidend
     S.subPath = d.path; S.base = d.cues; S.ops = [];
     applyOps(); render();
     toast(`${d.cues.length} cues geladen`,'ok');
-  }catch(e){ toast(e.message,'err'); }
+  }catch(e){
+    if(token !== S._selToken) return;
+    toast(e.message,'err');
+  }
+  if(token !== S._selToken) return;
+  updateConvertBar();
 }
+
+// Losse .srt's (van find_srts, al aanwezig). De ingebedde sporen komen er
+// via addEmbeddedOptions() ASYNCHROON bij zodra /api/mkv/tracks terug is -
+// dat mag deze lijst niet laten wachten (blueprint §5).
 function fillSubs(subs){
   const sel = $('#subSel');
   sel.innerHTML = '<option value="">-</option>';
+  // pad -> taaloordeel (language/lang_origin/display/forced/hearing_impaired,
+  // uit lang.detect_srt() via find_srts() - subs.py), voor de omzetknop
+  // hieronder: die moet weten wat er in het GESELECTEERDE bestand staat
+  // zonder een tweede aanroep te doen.
+  S.subsMeta = {};
   subs.forEach(s=>{
+    S.subsMeta[s.path] = s;
     const o = document.createElement('option');
     o.value = s.path; o.textContent = s.name;
     sel.appendChild(o);
   });
   if(subs.length === 1){ sel.value = subs[0].path; loadSub(subs[0].path); }
 }
+
+// ---------------------------------------------------------------- MKV: sporen ophalen
+// Haalt /api/mkv/tracks op voor het NU geopende bestand en zet de bewerkbare
+// tekstsporen (editable true of "convert", PGS/VobSub blijft buiten de
+// keuzelijst - blueprint "Beeldondertitels") als emb:<id>-opties in #subSel.
+async function loadEmbeddedTracks(path){
+  const token = ++S._selToken;
+  S.mkvPath = path;
+  S.embTracks = []; S.langButtons = []; S.langMore = [];
+  try{
+    const d = await api('/api/mkv/tracks?path=' + encodeURIComponent(path));
+    if(token !== S._selToken) return;   // ondertussen een ander bestand geopend
+    S.mkvSize = d.size;
+    S.langButtons = d.lang_buttons;
+    S.langMore = d.lang_more;
+    S.embTracks = d.tracks.filter(t => t.type === 'subtitles' && t.editable !== false);
+    addEmbeddedOptions();
+    if(S.subOrigin === 'embedded'){
+      // Zeldzaam: de gebruiker koos al een ingebed spoor voordat de sporenlijst
+      // terug was. trackInfo verversen zodat editable/taal actueel is.
+      S.trackInfo = S.embTracks.find(t => t.id === S.trackId) || null;
+      updateMkvBar();
+    }
+    // De omzetknop heeft S.mkvSize (bevestigingstekst) en S.langButtons/
+    // S.langMore (de tegels) nodig - die komen allebei pas mee met dit
+    // antwoord, dus pas hier bijwerken.
+    updateConvertBar();
+  }catch(e){
+    if(token !== S._selToken) return;
+    // Dit loopt voor ELK geopend videobestand, ook een AVI zonder enig
+    // ondertitelspoor - maar mkvmerge kan hier ook echt falen (corrupt
+    // bestand), en dat mag niet stilzwijgend verdwijnen (werkafspraken:
+    // fouten afhandelen of doorgeven, nooit negeren).
+    // MATIG 5: S.embTracks is hierboven al leeggemaakt, maar de emb:-opties
+    // in #subSel zelf niet - addEmbeddedOptions() liep tot nu toe alleen in
+    // het succespad. Zonder deze aanroep blijven verweesde opties staan: van
+    // een vorig bestand (als fillSubs() om wat voor reden dan ook nog niet
+    // langs kwam) of, na een geslaagde mux, van vóór de hernummering als de
+    // ververs-aanroep in refreshTrackAfterSave() zelf faalt. Kies je zo'n
+    // optie, dan gaat een track-id van het verkeerde bestand of de verkeerde
+    // (oude) nummering het commando in.
+    addEmbeddedOptions();
+    toast(e.message, 'err');
+  }
+}
+
+function addEmbeddedOptions(){
+  const sel = $('#subSel');
+  const cur = sel.value;   // een al gekozen losse .srt mag niet resetten
+  [...sel.querySelectorAll('option[data-emb]')].forEach(o => o.remove());
+  S.embTracks.forEach(t=>{
+    const o = document.createElement('option');
+    o.value = 'emb:' + t.id;
+    o.dataset.emb = '1';
+    const codec = t.editable === 'convert' ? `${t.codec} → wordt SRT` : t.codec;
+    o.textContent = `[${t.id}] ${t.language_display} · ${codec} (ingebed)`;
+    sel.appendChild(o);
+  });
+  sel.value = cur;
+}
+
+// ---------------------------------------------------------------- MKV: ingebed spoor laden
+async function loadEmbeddedSub(trackId){
+  // Zelfde volgnummer als loadSub()/loadEmbeddedTracks() (S._selToken - zie
+  // de toelichting bij het veld). loadSub() heeft bij een emb:-keuze net al
+  // opgehoogd vóór hij hierheen doorschakelt, maar deze functie hoogt zelf
+  // ook op: de kritieke wachttijd ligt hier vóór er ooit een S.extractCancel
+  // bestaat, namelijk de aanmeld-POST naar /api/mkv/extract zelf. Kiest de
+  // gebruiker een tweede spoor terwijl de POST van het eerste nog onderweg
+  // is, dan is er nog geen S.extractCancel om die eerste aanvraag mee af te
+  // melden, en zonder dit volgnummer zou het antwoord van spoor 1 straks
+  // S.trackId/S.base van het inmiddels gekozen spoor 2 overschrijven.
+  const token = ++S._selToken;
+  S.subOrigin = 'embedded';
+  S.trackId = trackId;
+  S.trackInfo = S.embTracks.find(t => t.id === trackId) || null;
+  S.subLangChoice = null;   // nieuw spoor: taal van HET OUDE spoor is het startpunt
+  // Een ingebed spoor is geen losse srt - de omzetknop hoort dus te verdwijnen
+  // (blueprint §5: die knop gaat over het inbouwen van een LOSSE srt).
+  S.subMeta = null; S.convLangChoice = null; resetConvertStage();
+  updateMkvBar();
+
+  const prog = $('#subProg');
+  prog.classList.remove('hide', 'done', 'err');
+  $('#subProgTxt').textContent = 'uithalen';
+  $('#subProgPct').textContent = '0%';
+  $('#subProgFill').style.width = '0%';
+
+  try{
+    const d = await api('/api/mkv/extract', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({path: S.mkvPath, track_id: trackId})});
+    if(token !== S._selToken) return;   // ondertussen een ander spoor/bestand gekozen
+    if(d.job.state === 'done'){ applyExtracted(d.job); return; }
+    // Vanaf hier is de bewaking al dubbel geregeld: zodra S.extractCancel
+    // hieronder gezet is, stopt loadSub() (bij een volgende keuze) of
+    // resetFileState() de poller er zelf mee vóór hij nog een onTick/onDone/
+    // onError kan afvuren - een tweede token-controle in die callbacks zou
+    // dus niets meer beschermen dat de cancel-functie niet al beschermt.
+    S.extractCancel = pollJob('/api/mkv/job?id=' + encodeURIComponent(d.job.id), {
+      onTick: j => {
+        $('#subProgFill').style.width = j.percent + '%';
+        $('#subProgPct').textContent = j.percent + '%';
+      },
+      onDone: j => applyExtracted(j),
+      onError: j => {
+        prog.classList.add('err');
+        $('#subProgTxt').textContent = j.error || 'uithalen mislukt';
+        toast(j.error || 'Uithalen mislukt','err');
+      },
+    });
+  }catch(e){
+    if(token !== S._selToken) return;
+    prog.classList.add('err');
+    $('#subProgTxt').textContent = e.message;
+    toast(e.message,'err');
+  }
+}
+
+function applyExtracted(job){
+  const prog = $('#subProg');
+  prog.classList.remove('err'); prog.classList.add('done');
+  $('#subProgFill').style.width = '100%';
+  $('#subProgPct').textContent = '100%';
+  $('#subProgTxt').textContent = 'gereed';
+  // Geen los pad: opslaan gaat voortaan via /api/mkv/save, niet
+  // /api/subtitle/save (blueprint §4: het werkbestand ligt in CACHE_DIR,
+  // buiten ALLOWED_ROOTS, en wordt daarom nooit als subPath aangeboden).
+  S.subPath = null;
+  S.base = job.cues; S.ops = [];
+  applyOps(); render();
+  toast(`${job.cues.length} cues geladen (ingebed spoor ${S.trackId})`,'ok');
+}
+
+// ---------------------------------------------------------------- MKV: taalkeuze en opslaan
+// De taalregel + tegels, blueprint §3b "De voorkant": een regel die zelf
+// tikbaar is en de rij opent, geen voorselectie, en drie tegels
+// (SUB_LANG_BUTTONS + "Andere…") in dezelfde .nudge-stijl als de bestaande
+// verschuifknoppen.
+function langLineText(){
+  if(!S.trackInfo) return 'Sporen laden…';
+  const display = S.subLangChoice ? S.subLangChoice.display : S.trackInfo.language_display;
+  const origin = S.subLangChoice ? 'gewijzigd' : 'van het bestaande spoor';
+  return `Taal: ${display} · ${origin}`;
+}
+
+function renderLangTiles(){
+  const main = $('#langTilesMain');
+  main.innerHTML = '';
+  S.langButtons.forEach(t=>{
+    const b = document.createElement('button');
+    b.className = 'nudge';
+    b.innerHTML = `${t.display}<i>${t.code}</i>`;
+    b.onclick = () => pickLang(t.code, t.display);
+    main.appendChild(b);
+  });
+  const more = document.createElement('button');
+  more.className = 'nudge';
+  more.innerHTML = 'Andere…<i>meer</i>';
+  more.onclick = () => $('#langTilesOther').classList.toggle('hide');
+  main.appendChild(more);
+
+  const other = $('#langTilesOther');
+  other.innerHTML = '';
+  S.langMore.forEach(t=>{
+    const b = document.createElement('button');
+    b.className = 'nudge';
+    b.innerHTML = `${t.display}<i>${t.code}</i>`;
+    b.onclick = () => pickLang(t.code, t.display);
+    other.appendChild(b);
+  });
+}
+
+function pickLang(code, display){
+  S.subLangChoice = {code, display};
+  $('#langTiles').classList.add('hide');
+  $('#langTilesOther').classList.add('hide');
+  $('#langLine').textContent = langLineText();
+  // De taal staat IN de bevestigingstekst (blueprint §3b: "in dezelfde
+  // bevestiging als de omvang, niet ergens anders"). Een lopende bevestiging
+  // toonde dus nog de oude taal - die vervalt, opnieuw tikken bevestigt de
+  // nieuwe.
+  resetSaveStage();
+}
+
+function updateMkvBar(){
+  const embedded = S.subOrigin === 'embedded';
+  $('#mkvBar').classList.toggle('hide', !embedded);
+  if(!embedded) return;
+  $('#langLine').textContent = langLineText();
+  // Rij dicht bij elke wissel van spoor - de vorige keuze hoort niet open te
+  // blijven staan voor een net geladen ander spoor.
+  $('#langTiles').classList.add('hide');
+  $('#langTilesOther').classList.add('hide');
+  renderLangTiles();
+  resetSaveStage();
+}
+
+$('#langLine').onclick = () => {
+  if(!S.trackInfo) return;
+  $('#langTiles').classList.toggle('hide');
+};
+
+// ---- de tik-bevestiging op #bSave voor een ingebed spoor ----
+function resetSaveStage(){
+  S.mkvSaveStage = 0;
+  clearTimeout(S.mkvSaveTimer);
+  updateSaveButton();
+}
+
+function updateSaveButton(){
+  const btn = $('#bSave');
+  const warn = $('#saveWarn');
+  if(S.subOrigin !== 'embedded'){
+    warn.classList.add('hide');
+    btn.textContent = 'Opslaan';
+    btn.disabled = !S.dirty;
+    return;
+  }
+  if(!S.trackInfo){
+    // Sporenlijst nog niet terug (of geladen bestand heeft geen bewerkbaar
+    // spoor meer): geen taal bekend, dus geen bevestiging tonen die een
+    // verkeerd label zou kunnen vastzetten.
+    warn.classList.add('hide');
+    btn.textContent = 'kies eerst een taal';
+    btn.disabled = true;
+    return;
+  }
+  if(!S.dirty){
+    warn.classList.add('hide');
+    btn.textContent = 'In MKV opslaan';
+    btn.disabled = true;
+    return;
+  }
+  const convert = S.trackInfo.editable === 'convert';
+  const stage = S.mkvSaveStage;
+  // stage 0 is ALTIJD het startpunt "In MKV opslaan", of het spoor nu direct
+  // bewerkbaar is of eerst een ASS/SSA-omzetting nodig heeft - alleen het
+  // AANTAL tikken daarna verschilt (twee resp. drie, blueprint §5).
+  if(stage === 0){
+    warn.classList.add('hide');
+    btn.textContent = 'In MKV opslaan';
+    btn.disabled = false;
+  } else if(convert && stage === 1){
+    // Drie tikken bij ASS/SSA (blueprint §5): eerst deze aparte waarschuwing,
+    // want opmaak en plaatsing gaan verloren en dat is met niets terug te
+    // draaien - geen tweede sync haalt ze terug.
+    warn.classList.remove('hide');
+    warn.textContent = 'Let op · opmaak en plaatsing gaan verloren';
+    btn.textContent = 'Ik weet het, ga door';
+    btn.disabled = false;
+  } else {
+    warn.classList.add('hide');
+    const langDisplay = S.subLangChoice ? S.subLangChoice.display : S.trackInfo.language_display;
+    let txt = `Bevestig · herschrijft ${fmtSize(S.mkvSize)} · spoor als ${langDisplay}`;
+    if(S.mkvPath && S.videoPath && S.mkvPath === S.videoPath){
+      txt += ' · de speler heeft dit bestand open — stop de weergave eerst';
+    }
+    btn.textContent = txt;
+    btn.disabled = false;
+  }
+}
+
+function updateMuxLabel(job, startedAt){
+  const pct = job.percent || 0;
+  let txt = job.phase || 'muxen';
+  if(pct > 0 && pct < 100){
+    const elapsedS = (performance.now() - startedAt) / 1000;
+    const etaS = elapsedS / pct * (100 - pct);
+    txt += ` · ${fmtDur(elapsedS)} verstreken, nog ~${fmtDur(etaS)}`;
+  }
+  $('#muxTxt').textContent = txt;
+  $('#muxPct').textContent = pct + '%';
+}
+
+// ERNSTIG 3: mkvmerge hernummert de sporen bij het muxen - onze eigen srt is
+// altijd het laatste invoerbestand, dus het spoor eruit wordt in de uitvoer
+// het HOOGST GENUMMERDE tekstspoor (gemeten, zie mkv.py bij
+// _execute_transaction: "het spoor eruit is in de uitvoer het hoogst
+// genummerde"). Zonder de sporenlijst opnieuw op te halen gebruikt een
+// tweede, snel achter elkaar volgende correctie het oude S.trackId, dat na
+// de mux een ANDER spoor kan aanduiden (bv. een anderstalig ondertitelspoor)
+// - de backend controleert track_id alleen op bestaan en bewerkbaarheid, niet
+// op taal, en zou dus zwijgend het verkeerde spoor overschrijven.
+//
+// Bewust een eigen, kleine matching hier in plaats van de generieke
+// "S.embTracks.find(t => t.id === S.trackId)" die loadEmbeddedTracks() al
+// voor het gewone geval gebruikt: die zoekt op het OUDE trackId, en dat
+// nummer kan na de mux toevallig een ANDER spoor treffen - precies de fout
+// die deze bevinding beschrijft. Hier pakken we in plaats daarvan het
+// hoogst genummerde tekstspoor, dezelfde regel als de backend zelf hanteert.
+async function refreshTrackAfterSave(path){
+  await loadEmbeddedTracks(path);
+  // Ondertussen elders geopend, of het opgeslagen spoor is niet meer
+  // 'embedded' (bv. de gebruiker koos intussen een losse .srt)? Dan is er
+  // niets meer om het nieuwe trackId aan te koppelen.
+  if(S.mkvPath !== path || S.subOrigin !== 'embedded') return;
+  const subs = S.embTracks.filter(t => t.type === 'subtitles');
+  const newest = subs.length ? subs.reduce((a,b) => b.id > a.id ? b : a) : null;
+  if(newest){
+    S.trackId = newest.id;
+    S.trackInfo = newest;
+  }
+  // De taal van het spoor dat we net schreven IS nu de taal van dat spoor -
+  // terug naar "van het bestaande spoor" (zelfde startpunt als
+  // loadEmbeddedSub() bij het openen van een spoor), tot een nieuwe tik.
+  S.subLangChoice = null;
+  updateMkvBar();
+}
+
+async function doMkvSave(){
+  const btn = $('#bSave');
+  btn.disabled = true;
+  const prog = $('#muxProg');
+  prog.classList.remove('hide', 'done', 'err');
+  $('#muxTxt').textContent = 'muxen'; $('#muxPct').textContent = '0%';
+  $('#muxFill').style.width = '0%';
+  const startedAt = performance.now();
+  // Vastleggen vóór het antwoord binnen is: als de gebruiker ondertussen een
+  // ander bestand opent, zet resetFileState() S.mkvPath/S.trackId al op het
+  // nieuwe bestand - de rest van deze functie moet dan over DIT bestand
+  // blijven gaan, niet over wat er inmiddels in S staat.
+  const path = S.mkvPath, trackId = S.trackId;
+
+  const body = {
+    path, track_id: trackId,
+    cues: S.cues.map(c => ({start: Math.round(c.start), end: Math.round(c.end), text: c.text})),
+  };
+  if(S.subLangChoice) body.language = S.subLangChoice.code;
+
+  try{
+    const d = await api('/api/mkv/save', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    // ERNSTIG 2: de afmeldfunctie bewaren, zoals S.jobCancel/S.extractCancel
+    // dat al doen voor audio en uithalen. resetFileState() roept hem aan bij
+    // elke navigatie weg van dit bestand: de mux op de server loopt gewoon
+    // door en vervangt het bestand (dat mag, en moet - anders staat er een
+    // brok te verweesen), maar zonder deze afmelding zou onDone() hieronder
+    // straks S.base/S.ops/S.dirty van een inmiddels ANDER geopend bestand
+    // overschrijven en de dirty-vlag stilzwijgend wissen.
+    S.muxCancel = pollJob('/api/mkv/job?id=' + encodeURIComponent(d.job.id), {
+      onTick: j => { $('#muxFill').style.width = (j.percent||0) + '%'; updateMuxLabel(j, startedAt); },
+      onDone: async j => {
+        S.muxCancel = null;
+        $('#muxFill').style.width = '100%';
+        prog.classList.add('done');
+        $('#muxTxt').textContent = 'gereed'; $('#muxPct').textContent = '100%';
+        // Wat op schijf staat is nu de nieuwe basis (zelfde afspraak als de
+        // bestaande /api/subtitle/save-tak hieronder).
+        S.base = S.cues.map(c => ({...c, start: Math.round(c.start), end: Math.round(c.end)}));
+        S.ops = []; applyOps(); render();
+        toast('Opgeslagen in de MKV','ok');
+        await refreshTrackAfterSave(path);
+        updateSaveButton();
+      },
+      onError: j => {
+        S.muxCancel = null;
+        prog.classList.add('err');
+        $('#muxTxt').textContent = j.error || 'opslaan mislukt';
+        toast(j.error || 'Opslaan mislukt','err');
+        updateSaveButton();
+      },
+    });
+  }catch(e){
+    prog.classList.add('err');
+    $('#muxTxt').textContent = e.message;
+    toast(e.message,'err');
+    updateSaveButton();
+  }
+}
+
+// ---------------------------------------------------------------- MKV: omzetknop / ingest
+// Blueprint §5, "Omzetknop": een losse srt naast een niet-MKV of een MKV
+// zonder dat spoor inbouwen, met dezelfde taalkeuze-UI als hierboven maar een
+// eigen, kleinere toestand (geen ASS/SSA-omweg nodig: een losse .srt is altijd
+// al SubRip). Bewust een EIGEN implementatie naast langLineText()/
+// renderLangTiles()/updateSaveButton() hierboven, niet een generalisatie
+// ervan: dat bestaande stuk code is al meerdere keuringsronden lang bijgeschaafd
+// (zie de ERNSTIG/MATIG-commentaren erboven) en het samenvoegen van twee
+// state-machines met een verschillend aantal bevestigingstappen is precies het
+// soort wijziging dat zo'n stuk code stilletjes weer kapot maakt.
+function convLangLineText(){
+  if(!S.subMeta) return 'Taal: Onbekend';
+  const display = S.convLangChoice ? S.convLangChoice.display : S.subMeta.display;
+  const origin = S.convLangChoice ? 'gewijzigd' : (S.subMeta.lang_origin || 'geen label');
+  return `Taal: ${display} · ${origin}`;
+}
+
+function renderConvLangTiles(){
+  const main = $('#convLangTilesMain');
+  main.innerHTML = '';
+  S.langButtons.forEach(t=>{
+    const b = document.createElement('button');
+    b.className = 'nudge';
+    b.innerHTML = `${t.display}<i>${t.code}</i>`;
+    b.onclick = () => pickConvLang(t.code, t.display);
+    main.appendChild(b);
+  });
+  const more = document.createElement('button');
+  more.className = 'nudge';
+  more.innerHTML = 'Andere…<i>meer</i>';
+  more.onclick = () => $('#convLangTilesOther').classList.toggle('hide');
+  main.appendChild(more);
+
+  const other = $('#convLangTilesOther');
+  other.innerHTML = '';
+  S.langMore.forEach(t=>{
+    const b = document.createElement('button');
+    b.className = 'nudge';
+    b.innerHTML = `${t.display}<i>${t.code}</i>`;
+    b.onclick = () => pickConvLang(t.code, t.display);
+    other.appendChild(b);
+  });
+}
+
+function pickConvLang(code, display){
+  S.convLangChoice = {code, display};
+  $('#convLangTiles').classList.add('hide');
+  $('#convLangTilesOther').classList.add('hide');
+  $('#convLangLine').textContent = convLangLineText();
+  // De taal staat IN de bevestigingstekst (zelfde afspraak als bij #bSave
+  // hierboven) - een lopende bevestiging toonde dus nog de oude taal.
+  resetConvertStage();
+}
+
+$('#convLangLine').onclick = () => {
+  if(!S.subMeta) return;
+  $('#convLangTiles').classList.toggle('hide');
+};
+
+function resetConvertStage(){
+  S.convStage = 0;
+  clearTimeout(S.convTimer);
+  updateConvertBar();
+}
+
+function updateConvertBar(){
+  const bar = $('#convertBar');
+  // Uitdrukkelijk alleen in de lokale modus (blueprint §5: "verschijnt in het
+  // lokale paneel") en alleen als er een LOSSE srt geselecteerd is in #subSel
+  // - dat is precies het bestand dat straks ingebouwd wordt, dezelfde
+  // eenduidigheid als bij het bewerken van een ingebed spoor hierboven.
+  const eligible = S.mode === 'local' && !!S.opened && S.subOrigin === 'file'
+                  && !!S.subPath && !!S.subMeta;
+  bar.classList.toggle('hide', !eligible);
+  if(!eligible) return;
+
+  $('#convLangLine').textContent = convLangLineText();
+  renderConvLangTiles();
+
+  const btn = $('#bConvert');
+  const isMkv = S.opened.toLowerCase().endsWith('.mkv');
+  const label = isMkv ? 'Ondertitel inbouwen' : 'Naar MKV omzetten';
+  const known = !!(S.convLangChoice || S.subMeta.language);
+  if(!known){
+    // Zelfde afspraak als updateSaveButton(): geen voorselectie en de knop
+    // blijft onklikbaar tot er getikt is (blueprint §3b, "De voorkant").
+    btn.textContent = 'kies eerst een taal';
+    btn.disabled = true;
+    return;
+  }
+  if(S.convStage === 0){
+    btn.textContent = label;
+    btn.disabled = false;
+  } else {
+    const langDisplay = S.convLangChoice ? S.convLangChoice.display : S.subMeta.display;
+    let txt = `Bevestig · herschrijft ${fmtSize(S.mkvSize)} · spoor als ${langDisplay}`;
+    if(S.videoPath && S.opened === S.videoPath){
+      txt += ' · de speler heeft dit bestand open — stop de weergave eerst';
+    }
+    btn.textContent = txt;
+    btn.disabled = false;
+  }
+}
+
+function updateConvLabel(job, startedAt){
+  const pct = job.percent || 0;
+  let txt = job.phase || 'omzetten';
+  if(pct > 0 && pct < 100){
+    const elapsedS = (performance.now() - startedAt) / 1000;
+    const etaS = elapsedS / pct * (100 - pct);
+    txt += ` · ${fmtDur(elapsedS)} verstreken, nog ~${fmtDur(etaS)}`;
+  }
+  $('#convTxt').textContent = txt;
+  $('#convPct').textContent = pct + '%';
+}
+
+// Los van api(): /api/mkv/ingest geeft bij een onbepaalde taal een 422 met een
+// GESTRUCTUREERDE detail ({"code":"language_unknown", ...}, blueprint §4) -
+// api() zet detail altijd om in een Error(string), en new Error(object) wordt
+// domweg "[object Object]". Deze functie geeft de structuur ongemoeid door,
+// zodat doConvert() de knoppenrij kan openklappen in plaats van een
+// onleesbare foutmelding te tonen.
+async function postIngest(body){
+  const r = await fetch('/api/mkv/ingest', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const text = await r.text();
+  let data = null;
+  try{ data = JSON.parse(text); }catch(e){ /* geen JSON - blijft data=null */ }
+  if(r.ok) return data;
+  if(r.status === 422 && data && data.detail && data.detail.code === 'language_unknown'){
+    const err = new Error('language_unknown');
+    err.languageUnknown = true;
+    throw err;
+  }
+  const detail = data && data.detail;
+  throw new Error(typeof detail === 'string' ? detail : (detail ? JSON.stringify(detail) : text));
+}
+
+async function doConvert(){
+  if(!S.subMeta) return;
+  const btn = $('#bConvert');
+  btn.disabled = true;
+  const prog = $('#convProg');
+  prog.classList.remove('hide', 'done', 'err');
+  $('#convTxt').textContent = 'omzetten'; $('#convPct').textContent = '0%';
+  $('#convFill').style.width = '0%';
+  const startedAt = performance.now();
+  // Vastleggen vóór het antwoord binnen is - zelfde reden als doMkvSave():
+  // als de gebruiker ondertussen een ander bestand opent, zet resetFileState()
+  // S.opened/S.subPath al op het nieuwe bestand.
+  const videoPath = S.opened, srtPath = S.subPath;
+
+  const body = {video_path: videoPath, srt_path: srtPath};
+  if(S.convLangChoice) body.language = S.convLangChoice.code;
+
+  try{
+    const d = await postIngest(body);
+    S.convCancel = pollJob('/api/mkv/job?id=' + encodeURIComponent(d.job.id), {
+      onTick: j => { $('#convFill').style.width = (j.percent||0) + '%'; updateConvLabel(j, startedAt); },
+      onDone: async j => {
+        S.convCancel = null;
+        $('#convFill').style.width = '100%';
+        prog.classList.add('done');
+        if(j.result && j.result.skipped){
+          // Idempotentie (blueprint §3): al gedaan, niets veranderd op schijf.
+          $('#convTxt').textContent = 'al gedaan'; $('#convPct').textContent = '100%';
+          toast('Was al ingebouwd — niets gewijzigd','ok');
+        } else {
+          $('#convTxt').textContent = 'gereed'; $('#convPct').textContent = '100%';
+          toast('Omgezet naar MKV','ok');
+        }
+        // Bij een omzetting (AVI/MP4 -> MKV) bestaat videoPath niet meer, en
+        // bij een inbouw in een bestaande MKV zijn de sporen veranderd - in
+        // beide gevallen is opnieuw bladeren en het bestand sluiten
+        // eenvoudiger en veiliger dan proberen "hetzelfde" bestand open te
+        // houden onder een naam die misschien niet meer bestaat.
+        await browse($('#browsePath').value);
+        S.opened = null; S.selected = null;
+        resetFileState();
+        paintList();
+      },
+      onError: j => {
+        S.convCancel = null;
+        prog.classList.add('err');
+        $('#convTxt').textContent = j.error || 'omzetten mislukt';
+        toast(j.error || 'Omzetten mislukt','err');
+        updateConvertBar();
+      },
+    });
+  }catch(e){
+    if(e.languageUnknown){
+      // Blueprint §4: "de voorkant herkent code en klapt de knoppenrij open
+      // in plaats van een rode melding te tonen."
+      prog.classList.add('hide');
+      $('#convLangTiles').classList.remove('hide');
+      toast('Kies eerst een taal','err');
+      updateConvertBar();
+      return;
+    }
+    prog.classList.add('err');
+    $('#convTxt').textContent = e.message;
+    toast(e.message,'err');
+    updateConvertBar();
+  }
+}
+
+$('#bConvert').onclick = async () => {
+  if(!S.subMeta) return;
+  clearTimeout(S.convTimer);
+  // Twee tikken, geen derde: een losse srt is altijd al SubRip, dus de
+  // ASS/SSA-tussenstap van #bSave (blueprint §5, "Drie tikken bij ASS/SSA")
+  // is hier nooit van toepassing.
+  if(S.convStage < 1){
+    S.convStage = 1;
+    updateConvertBar();
+    S.convTimer = setTimeout(()=>{ S.convStage = 0; updateConvertBar(); }, 10000);
+    return;
+  }
+  S.convStage = 0;
+  clearTimeout(S.convTimer);
+  await doConvert();
+};
 
 // ---------------------------------------------------------------- TV poll
 let lastItem = null;
@@ -535,20 +1378,33 @@ async function poll(){
     const d = await api('/api/session');
     $('#dot').className = 'dot' + (d.playing ? ' live' : '');
     if(!d.playing){
-      S.session = null; lastItem = null;
+      S.session = null; lastItem = null; S.videoPath = null;
       $('#nowName').textContent = 'Geen sessie';
       $('#nowMeta').textContent = 'Start een aflevering op je TV';
       return;
     }
     S.session = d; S.pos = d.position_ms; S.posAt = performance.now(); S.paused = d.paused;
+    S.videoPath = d.video_path;   // voor de "speler heeft dit bestand open"-waarschuwing bij opslaan
     $('#nowName').textContent = d.name;
     $('#nowMeta').textContent =
       `${d.device} \u00b7 ${d.paused?'gepauzeerd':'speelt'} \u00b7 spoor ${d.subtitle_index ?? '-'}`;
     if(d.item_id !== lastItem){
       lastItem = d.item_id;
+      // ERNSTIG 1: de dirty-waarschuwing staat los van het opruimen. Eerder
+      // sloeg poll() het resetten van S.subOrigin/S.trackId/S.trackInfo/
+      // S.subLangChoice/S.base/S.cues/S.ops over zolang er niet-opgeslagen
+      // wijzigingen waren, maar fillSubs() en loadEmbeddedTracks() werden
+      // vlak daarna ONVOORWAARDELIJK tegen het NIEUWE bestand aangeroepen -
+      // dat liet een ingebed spoor van de vorige aflevering aan het trackId
+      // van de nieuwe aflevering hangen (zie de blueprint-toelichting bij
+      // deze bevinding). Bij een item-wissel dus altijd opruimen; de
+      // waarschuwing is alleen nog een melding, geen voorwaarde.
       if(S.dirty) toast('Andere aflevering \u2014 niet-opgeslagen wijzigingen','err');
-      else { S.base=[]; S.cues=[]; S.ops=[]; listSig=''; }
+      resetFileState();
       fillSubs(d.subtitles);
+      // Zelfde volgorde-afspraak als openEntry(): pas na fillSubs, en async
+      // zodat een trage -J de rest van poll() niet blokkeert.
+      if(d.video_path) loadEmbeddedTracks(d.video_path);
       if(d.video_path) loadFps(d.video_path);
     }
   }catch(e){
@@ -625,7 +1481,16 @@ function openEntry(e){
   paintList();
   $('#audio').classList.add('hide');
   $('#audio').removeAttribute('src');
+  // MATIG 4 / gedeelde oorzaak: de volledige per-bestand-toestand (cues,
+  // subPath, mkv-koppeling, taalkeuze, lopende taken) hoort hier niet te
+  // blijven staan - anders zie je bestand B terwijl je aan A werkt.
+  resetFileState();
   fillSubs(e.subtitles);
+  // Ná fillSubs, niet ervoor: sporen ophalen is een aparte, tragere
+  // mkvmerge -J-aanroep en mag de al bekende losse .srt's niet ophouden
+  // (blueprint §5: "altijd na find_srts, zodat een trage -J de rest niet
+  // ophoudt"). loadEmbeddedTracks() is zelf async en blokkeert dus niets.
+  loadEmbeddedTracks(e.path);
   showProgressUnder(e.path);
   loadFps(e.path);
   prepare(e.path);
@@ -633,33 +1498,25 @@ function openEntry(e){
 
 // ---------------------------------------------------------------- uitpakken
 async function prepare(path){
-  clearInterval(S.jobTimer);
+  if(S.jobCancel) S.jobCancel();
   try{
     const d = await api('/api/audio/prepare',{method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify({path})});
     S.jobKey = d.key;
     if(d.state === 'done'){ playAudio(d.key); setProg(100,'gereed','done'); return; }
     setProg(0, d.copy ? `${d.codec} \u2014 kopiëren` : `${d.codec} \u2192 aac hercoderen`);
-    S.jobTimer = setInterval(()=>pollJob(d.key), 700);
+    // Gebruikt dezelfde generieke pollJob(url, ...) als de MKV-taken hieronder
+    // (blueprint §5: "pollJob() wordt veralgemeend naar /api/mkv/job") - hier
+    // stond eerder een eigen pollJob(key)-functie met dezelfde naam als de
+    // generieke poller verderop in dit bestand; de laatst gedefinieerde functie
+    // wint in JavaScript, dus die tweede definitie maakte de generieke poller
+    // ongemerkt dode code. Eén poller, geen naamsbotsing meer.
+    S.jobCancel = pollJob('/api/audio/progress?key=' + encodeURIComponent(d.key), {
+      onTick: dd => setProg(dd.percent, dd.copy ? 'kopiëren' : 'hercoderen naar aac'),
+      onDone: dd => { setProg(100, 'gereed', 'done'); playAudio(d.key); },
+      onError: dd => { setProg(100, dd.error || 'uitpakken mislukt', 'err'); toast('Uitpakken mislukt','err'); },
+    });
   }catch(e){ toast(e.message,'err'); }
-}
-
-async function pollJob(key){
-  try{
-    const d = await api('/api/audio/progress?key=' + encodeURIComponent(key));
-    if(d.state === 'error'){
-      clearInterval(S.jobTimer);
-      setProg(100, d.error || 'uitpakken mislukt', 'err');
-      toast('Uitpakken mislukt','err');
-      return;
-    }
-    setProg(d.percent, d.copy ? 'kopiëren' : 'hercoderen naar aac');
-    if(d.state === 'done'){
-      clearInterval(S.jobTimer);
-      setProg(100, 'gereed', 'done');
-      playAudio(key);
-    }
-  }catch(e){ clearInterval(S.jobTimer); }
 }
 
 function setProg(pct, txt, cls=''){
@@ -714,19 +1571,48 @@ $('#browseGo').onclick = ()=> browse($('#browsePath').value);
 $('#browsePath').onkeydown = e => { if(e.key==='Enter') browse(e.target.value); };
 
 $('#bSave').onclick = async ()=>{
-  if(!S.subPath || !S.dirty) return;
-  $('#bSave').disabled = true;
-  try{
-    const d = await api('/api/subtitle/save',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({path:S.subPath, cues:S.cues.map(c=>({
-        start:Math.round(c.start), end:Math.round(c.end), text:c.text}))})});
-    // Wat op schijf staat is nu de nieuwe basis.
-    S.base = S.cues.map(c=>({...c, start:Math.round(c.start), end:Math.round(c.end)}));
-    S.ops = []; applyOps();
-    toast(`Opgeslagen \u00b7 backup ${d.backup.split('/').pop()}`,'ok');
-    render();
-  }catch(e){ toast(e.message,'err'); $('#bSave').disabled = false; }
+  // Los pad, ongewijzigd: het bestaande /api/subtitle/save-pad met .orig-backup.
+  if(S.subOrigin !== 'embedded'){
+    if(!S.subPath || !S.dirty) return;
+    $('#bSave').disabled = true;
+    try{
+      const d = await api('/api/subtitle/save',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({path:S.subPath, cues:S.cues.map(c=>({
+          start:Math.round(c.start), end:Math.round(c.end), text:c.text}))})});
+      // Wat op schijf staat is nu de nieuwe basis.
+      S.base = S.cues.map(c=>({...c, start:Math.round(c.start), end:Math.round(c.end)}));
+      S.ops = []; applyOps();
+      toast(`Opgeslagen \u00b7 backup ${d.backup.split('/').pop()}`,'ok');
+      render();
+    }catch(e){ toast(e.message,'err'); $('#bSave').disabled = false; }
+    return;
+  }
+
+  // Ingebed spoor: twee tikken (drie bij ASS/SSA), zie updateSaveButton().
+  // Geen confirm()-venster en geen invoerveld - op de Nest Hub is tikken het
+  // enige dat er is (blueprint \u00a75).
+  if(!S.trackInfo || !S.dirty) return;
+  const maxStage = S.trackInfo.editable === 'convert' ? 2 : 1;
+  clearTimeout(S.mkvSaveTimer);
+  if(S.mkvSaveStage < maxStage){
+    S.mkvSaveStage++;
+    updateSaveButton();
+    // Na tien seconden zonder de volgende tik valt de knop terug naar het
+    // begin (blueprint \u00a75: "Na tien seconden zonder tweede tik valt hij
+    // terug"). Een tik n\u00e1 die timeout mag dus nooit meer alsnog starten -
+    // vandaar dat dit dezelfde stage-teller reset die de trage-tik-klik
+    // hieronder ook zou zien.
+    S.mkvSaveTimer = setTimeout(()=>{ S.mkvSaveStage = 0; updateSaveButton(); }, 10000);
+    return;
+  }
+  // Laatste tik: de stage-teller gaat DIRECT terug naar 0, zodat een trage
+  // dubbelklik die na deze regel nog een keer binnenkomt niet per ongeluk
+  // een tweede mux start op basis van een niet meer geldige "we zijn al op
+  // de laatste stage"-toestand.
+  S.mkvSaveStage = 0;
+  clearTimeout(S.mkvSaveTimer);
+  await doMkvSave();
 };
 
 $('#bReload').onclick = async ()=>{
