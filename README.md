@@ -183,7 +183,10 @@ The user needs read and write access to everything under `ALLOWED_ROOTS`.
 - `convert.py` needs the **same** `ALLOWED_ROOTS` and `CACHE_DIR` as the
   running service — its lock file must point at the same place, or two
   rewrites of the same file could run at once. Source the service's env file
-  before running it: `set -a; . ./subtitle-sync.env; set +a`.
+  before running it: `set -a; . ./subtitle-sync.env; set +a`. The JSON values
+  in that file must be wrapped in single quotes for this to work — a shell
+  strips bare double quotes and leaves invalid JSON, where systemd would not.
+  The example file shows the form.
 - The loose `.srt` is kept next to the video after embedding, unless
   `--drop-srt` is given.
 
