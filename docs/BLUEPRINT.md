@@ -433,7 +433,7 @@ De vijf punten uit de eerste ronde zijn beantwoord. Ze staan hier als korte vera
    - **ZFS is copy-on-write, dus de ruimtecontrole in stap 3 blijft nodig** — sterker nog, `shutil.disk_usage` rapporteert op ZFS de vrije ruimte van de pool, wat met een quota of reservering op de dataset kan afwijken van wat je werkelijk mag schrijven. Marge houden.
    - De idmap van CT 101 mapt `u 1001 1001 1` en `g 1003 1003 1`, dus uid 1001 en gid 1003 zijn identiek binnen en buiten de container en het eigendom klopt vanzelf.
 
-2. **De mediashares staan niet op de ontwikkelmachine.** Op 192.168.40.250 zijn alleen `/mnt/Developing`, `/mnt/Politiek`, `/mnt/gesture` en `/mnt/homeassistant` gemount; `/mnt/Serie` en `/mnt/Film` niet. De stappen 0 tot en met 8 werken op zelfgemaakte testbestanden in `~/mkvtest` en hebben ze niet nodig, maar **stap 9 (`convert.py scan` over een echte map) en de meting in punt 3 kunnen daar niet uitgevoerd worden.** **Besloten: stap 9 wordt op CT 101 gedraaid**, waar de shares wel staan. De stappen 0 tot en met 8 blijven op de ontwikkelmachine.
+2. **De mediashares staan niet op de ontwikkelmachine.** Op 192.168.40.250 zijn alleen `/mnt/Developing`, `/mnt/Politiek`, `/mnt/gesture` en `/mnt/homeassistant` gemount; `/mnt/Serie` en `/mnt/Film` niet. De stappen 0 tot en met 8 werken op zelfgemaakte testbestanden in `/mnt/Developing/testdata/sync` en hebben ze niet nodig, maar **stap 9 (`convert.py scan` over een echte map) en de meting in punt 3 kunnen daar niet uitgevoerd worden.** **Besloten: stap 9 wordt op CT 101 gedraaid**, waar de shares wel staan. De stappen 0 tot en met 8 blijven op de ontwikkelmachine.
 
 3. ~~Hoeveel bestanden hebben een kale `film.srt` zonder taalaanduiding?~~ **Gemeten op 2026-09-10 over de echte collectie** (`convert.py scan /mnt/Serie /mnt/Film` op CT 101): 13.443 video's, 17.338 bijbehorende srt-bestanden. Daarvan 2.475 zonder enige taalaanduiding, 98 met een onherkend label en 0 met twee talen in de naam — samen **2.573 van 17.338, oftewel 15%**.
 
@@ -450,7 +450,7 @@ Bouw en controleer in deze volgorde. Ontwikkelen gebeurt op **CT 300** (`ssh ct3
 **0. Testmateriaal maken, vóór alles.** Raak de echte collectie niet aan tot stap 9.
 
 ```bash
-mkdir -p ~/mkvtest && cd ~/mkvtest
+mkdir -p /mnt/Developing/testdata/sync && cd /mnt/Developing/testdata/sync
 ffmpeg -f lavfi -i testsrc=size=320x240:rate=25 -f lavfi -i sine=frequency=440 \
        -t 30 -c:v libx264 -c:a aac -shortest test.mp4
 printf '1\n00:00:01,000 --> 00:00:03,000\nEerste regel\n\n2\n00:00:05,000 --> 00:00:07,000\nTweede regel\n' > test.nl.srt
@@ -458,7 +458,7 @@ mkvmerge -o test.mkv test.mp4 --language 0:nld test.nl.srt
 cp test.mp4 test.avi 2>/dev/null; ffmpeg -i test.mp4 -c:v mpeg4 -c:a mp3 test.avi
 ```
 
-Draai de dienst tijdens het ontwikkelen met de hand (`ALLOWED_ROOTS='["/home/guyf/mkvtest"]' .venv/bin/uvicorn app:app --port 8099`), niet via de unit — `ProtectHome=yes` sluit je thuismap anders af. *Controle:* `mkvmerge -J test.mkv | head -40` toont drie sporen.
+Draai de dienst tijdens het ontwikkelen met de hand (`ALLOWED_ROOTS='["/mnt/Developing/testdata/sync"]' .venv/bin/uvicorn app:app --port 8099`), niet via de unit. Het testmateriaal staat sinds 2026-09-12 op de NAS in plaats van in de thuismap, zodat `~` op de ontwikkelmachine leeg blijft. *Controle:* `mkvmerge -J test.mkv | head -40` toont drie sporen.
 
 **1. `mkvtoolnix` installeren en de versie vaststellen.** Op CT 300, als root: `apt install -y mkvtoolnix` (het CLI-pakket; `mkvtoolnix-gui` is niet nodig). *Controle:* `mkvmerge --version` en `mkvextract --help | grep -c gui-mode` — noteer of `--gui-mode` bij `mkvextract` bestaat, want daar hangt de voortgangsafhandeling van stap 4 aan.
 
@@ -466,9 +466,9 @@ Draai de dienst tijdens het ontwikkelen met de hand (`ALLOWED_ROOTS='["/home/guy
 
 **2b. `render_srt` met het inklappen van lege regels** (aparte commit, zodat je hem apart kunt terugdraaien). *Controle:* een cue met een lege regel erin, opgeslagen en teruggelezen, blijft één cue; de WARN-regel verschijnt in het journaal.
 
-**2c. `lang.py` plus de aangepaste `find_srts()`.** Bouw de tabel, de vier functies en `selftest()`. Dit is de enige stap die volledig zonder mediabestanden te controleren is, dus doe hem vóór al het muxwerk. *Controle:* `python3 lang.py --selftest` loopt de tabel uit §3b af en geeft afsluitcode 0. Maak daarna in `~/mkvtest` de bestanden `test.srt`, `test.nl.srt`, `test.en.forced.srt`, `test.subs.srt` en `test2.nl.srt` aan (leeg mag) en controleer dat `/api/browse?path=/home/guyf/mkvtest` bij `test.mkv` vier ondertitels toont met de juiste taal en herkomst, en `test2.nl.srt` **niet** — die valt door de grenscontrole.
+**2c. `lang.py` plus de aangepaste `find_srts()`.** Bouw de tabel, de vier functies en `selftest()`. Dit is de enige stap die volledig zonder mediabestanden te controleren is, dus doe hem vóór al het muxwerk. *Controle:* `python3 lang.py --selftest` loopt de tabel uit §3b af en geeft afsluitcode 0. Maak daarna in `/mnt/Developing/testdata/sync` de bestanden `test.srt`, `test.nl.srt`, `test.en.forced.srt`, `test.subs.srt` en `test2.nl.srt` aan (leeg mag) en controleer dat `/api/browse?path=/mnt/Developing/testdata/sync` bij `test.mkv` vier ondertitels toont met de juiste taal en herkomst, en `test2.nl.srt` **niet** — die valt door de grenscontrole.
 
-**3. `mkv.identify()`.** *Controle:* `/api/mkv/tracks?path=/home/guyf/mkvtest/test.mkv` toont het SubRip-spoor als `editable: true`. Maak ook een MKV met een PGS-spoor (of test tegen een echte Blu-ray-rip, alleen lezend) en controleer dat die `editable: false` krijgt met een leesbare reden.
+**3. `mkv.identify()`.** *Controle:* `/api/mkv/tracks?path=/mnt/Developing/testdata/sync/test.mkv` toont het SubRip-spoor als `editable: true`. Maak ook een MKV met een PGS-spoor (of test tegen een echte Blu-ray-rip, alleen lezend) en controleer dat die `editable: false` krijgt met een leesbare reden.
 
 **4. Taakmodel plus `mkv.extract()`.** Inclusief de ene-taak-tegelijk-grendel en `/api/mkv/job`. *Controle:* een extract op `test.mkv` levert de twee cues terug; een tweede aanvraag terwijl de eerste loopt geeft 409 met de bestandsnaam erin. Op een groot echt bestand (alleen lezend!) loopt het percentage op.
 

@@ -260,3 +260,7 @@ All of it comes from `subtitle-sync.env`, which is mode 600 and never committed.
 | `/api/mkv/job?id=` | GET | State, percentage, phase and error of a track/mux job; a finished extract also carries `cues` |
 | `/api/mkv/save` | POST | `{path, track_id, cues, language?}` → starts the mux back into the container. Omit `language` to keep the old track's language and flags |
 | `/api/mkv/ingest` | POST | `{video_path, srt_path, language?, drop_srt?}` → starts converting to MKV / embedding the loose subtitle |
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
